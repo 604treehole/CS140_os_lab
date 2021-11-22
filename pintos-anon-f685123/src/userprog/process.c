@@ -20,7 +20,7 @@
 #include "devices/timer.h"
 static thread_func start_process NO_RETURN;
 static bool load(const char *cmdline, void (**eip)(void), void **esp);
-
+void fd_table_destroy_func(struct hash_elem *e, void *aux UNUSED);
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
@@ -29,6 +29,7 @@ tid_t process_execute(const char *file_name)
 {
   char *fn_copy, *proc_name;
   tid_t tid;
+  struct thread *thr;
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page(0);
@@ -40,21 +41,31 @@ tid_t process_execute(const char *file_name)
     palloc_free_page(fn_copy);
     return TID_ERROR;
   }
-
   strlcpy(fn_copy, file_name, PGSIZE);
   strlcpy(proc_name, file_name, PGSIZE);
   char *save_ptr;
   proc_name = strtok_r(proc_name, " ", &save_ptr);
+
   /* Create a new thread to execute FILE_NAME. */
   tid = thread_create(proc_name, PRI_DEFAULT, start_process, fn_copy);
   palloc_free_page(proc_name);
   if (tid == TID_ERROR)
     palloc_free_page(fn_copy);
+  struct list ll = thread_current()->children;
+  struct list_elem *e = NULL;
 
-  //TODO
-  //sema_down(&(thread_current()->wait_child));
-  //if (!thread_current()->success)
-  //  return TID_ERROR;
+  for (e = list_begin(&ll); e != list_end(&ll); e = list_next(e))
+  {
+    struct thread *t = list_entry(e, struct process, elem);
+    if (t->tid == tid)
+      break;
+  }
+  if (!e)
+    return TID_ERROR;
+  struct process *proc = list_entry(e, struct process, elem);
+  sema_down(&(proc->wait));
+  if (!proc->child_started)
+    return TID_ERROR;
   return tid;
 }
 void push_argument(void **esp, int argc, int argv[])
@@ -96,7 +107,7 @@ start_process(void *file_name_)
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load(file_name, &if_.eip, &if_.esp);
 
-  // split
+  // split args-many a b c d e f g h i j k l m n o p q r s t u v
   if (success)
   {
     for (char *left = strtok_r(cmd, " ", &save_ptr); left != NULL; left = strtok_r(NULL, " ", &save_ptr))
@@ -106,8 +117,8 @@ start_process(void *file_name_)
       argv[argc++] = (int)if_.esp;
     }
     push_argument(&if_.esp, argc, argv);
-    //thread_current()->parent->success = 1;
-    //sema_up(&thread_current()->parent->wait_child);
+    thread_current()->proc->child_started = true;
+    sema_up(&thread_current()->proc->wait);
     palloc_free_page(file_name);
     free(cmd);
   }
@@ -145,7 +156,22 @@ start_process(void *file_name_)
    does nothing. */
 int process_wait(tid_t child_tid UNUSED)
 {
-  timer_msleep(400);
+  // timer_msleep(1000);
+  struct thread *cur = thread_current();
+  struct list_elem *e;
+  for (e = list_begin(&cur->children); e != list_end(&cur->children); e = list_next(e))
+  {
+    struct process *proc = list_entry(e, struct process, elem);
+    if (proc->tid == child_tid)
+    {
+      if (proc->self_alive)
+        sema_down(&(proc->wait));
+      int exit_code = proc->exit_code;
+      list_remove(e);
+      free(proc);
+      return exit_code;
+    }
+  }
   return -1;
 }
 
@@ -153,14 +179,29 @@ int process_wait(tid_t child_tid UNUSED)
 void process_exit(void)
 {
   struct thread *cur = thread_current();
+  struct list_elem *e;
   uint32_t *pd;
+  if (cur->proc)
+  {
+    printf("%s: exit(%d)\n", cur->name, cur->proc->exit_code);
+    hash_destroy(&cur->proc->fd_table, &fd_table_destroy_func);
+    cur->proc->self_alive = false;
+    if (cur->proc->parent_alive)
+    {
+      sema_up(&cur->proc->wait);
+    }
+    else
+    {
+      free(cur->proc);
+    }
+  }
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
   pd = cur->pagedir;
   if (pd != NULL)
   {
-    printf("%s: exit(%d)\n", cur->name, cur->exit_code);
+
     /* Correct ordering here is crucial.  We must set
          cur->pagedir to NULL before switching page directories,
          so that a timer interrupt can't switch back to the
@@ -168,6 +209,7 @@ void process_exit(void)
          directory before destroying the process's page
          directory, or our active page directory will be one
          that's been freed (and cleared). */
+    //??
     cur->pagedir = NULL;
     pagedir_activate(NULL);
     pagedir_destroy(pd);
@@ -510,4 +552,11 @@ install_page(void *upage, void *kpage, bool writable)
   /* Verify that there's not already a page at that virtual
      address, then map our page there. */
   return (pagedir_get_page(t->pagedir, upage) == NULL && pagedir_set_page(t->pagedir, upage, kpage, writable));
+}
+
+void fd_table_destroy_func(struct hash_elem *e, void *aux UNUSED)
+{
+  struct file_descriptor *descriptor = hash_entry(e, struct file_descriptor, hash_elem);
+  ASSERT(descriptor->file != NULL);
+  // close_syscall(descriptor, false);
 }

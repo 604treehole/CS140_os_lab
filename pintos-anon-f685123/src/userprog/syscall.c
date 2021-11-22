@@ -11,10 +11,18 @@ void syscall_init(void)
 {
   intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall");
 }
-
+bool valid_user_addr(unsigned *addr)
+{
+  return addr && addr < 0xc0000000 && pagedir_get_page(thread_current()->pagedir, addr);
+}
 unsigned int pop_stack(unsigned int **ptr)
 {
-  // todo: judge overflow
+  if (!valid_user_addr((unsigned *)(*ptr)) ||
+      !valid_user_addr((unsigned *)(*ptr) + 1))
+  {
+    thread_current()->proc->exit_code = -1;
+    thread_exit();
+  }
   unsigned int top = (unsigned int)(**ptr);
   *ptr += 1;
   return top;
@@ -26,7 +34,7 @@ void sys_halt(struct intr_frame *f)
 bool sys_exit(unsigned int *ptr)
 {
   int status = (int)pop_stack(&ptr);
-  thread_current()->exit_code = status;
+  thread_current()->proc->exit_code = status;
   thread_exit();
   return true;
 }
@@ -34,21 +42,30 @@ bool sys_exit(unsigned int *ptr)
 bool sys_write(unsigned *ptr, unsigned *eax)
 {
   int fd = (int)pop_stack(&ptr);
-  const void *buf = (const void *)pop_stack(&ptr);
+  const char *buf = (const char *)pop_stack(&ptr);
   unsigned size = pop_stack(&ptr);
+  if (!valid_user_addr((unsigned *)buf) || !valid_user_addr((unsigned *)(buf + size)))
+    return false;
   if (fd == 1)
   {
     putbuf(buf, size);
     *eax = size;
   }
+  else
+  {
+    printf("System call write.\n");
+  }
   return true;
 }
-
+void sys_close(unsigned *ptr, unsigned *eax)
+{
+  return true;
+}
 static void
 syscall_handler(struct intr_frame *f UNUSED)
 {
-  unsigned *esp_addr = f->esp;
-  unsigned *eax_addr = f->eax;
+  unsigned *esp_addr = (unsigned *)f->esp;
+  unsigned *eax_addr = (unsigned *)f->eax;
   // int number = *(unsigned int *)(esp_addr);
   int number = pop_stack(&esp_addr);
   switch (number)
@@ -94,8 +111,7 @@ syscall_handler(struct intr_frame *f UNUSED)
     break;
 
   default:
-    break;
+    thread_current()->proc->exit_code = -1;
+    thread_exit();
   }
-  // printf("system call!\n");
-  // thread_exit();
 }
