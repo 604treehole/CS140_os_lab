@@ -3,7 +3,9 @@
 
 #include "threads/thread.h"
 #include "hash.h"
+#include "threads/synch.h"
 typedef int tid_t;
+struct lock file_sys_lock;
 struct file_descriptor
 {
     int fd;
@@ -27,5 +29,5 @@ tid_t process_execute(const char *file_name);
 int process_wait(tid_t);
 void process_exit(void);
 void process_activate(void);
-
+struct file_descriptor *proc_get_fd_struct(int fd);
 #endif /* userprog/process.h */

@@ -70,7 +70,8 @@
             "dependsOn": [
                 "[P2] compile"
             ],
-            "command": "pintos  -k -T 60 --bochs --gdb --filesys-size=2 -p tests/userprog/${input:prog_name} -a ${input:prog_name} -- -q  -f run '${input:args}'",
+            // "command": "pintos  -k -T 60 --bochs --gdb --filesys-size=2 -p tests/userprog/${input:prog_name} -a ${input:prog_name} -- -q  -f run '${input:args}'",
+            "command": "pintos -v -k -T 60 --bochs --gdb --filesys-size=2 -p tests/userprog/open-empty -a open-empty -- -q  -f run open-empty",
             "options": {
                 "cwd": "${workspaceFolder}/src/userprog/build"
             }

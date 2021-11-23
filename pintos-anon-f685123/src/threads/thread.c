@@ -20,6 +20,7 @@
    of thread.h for details. */
 #define THREAD_MAGIC 0xcd6abf4b
 
+extern struct lock file_sys_lock;
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
 static struct list ready_list;
@@ -90,7 +91,7 @@ bool fd_table_less_func(const struct hash_elem *a, const struct hash_elem *b, vo
 void thread_init(void)
 {
   ASSERT(intr_get_level() == INTR_OFF);
-
+  lock_init(&file_sys_lock);
   lock_init(&tid_lock);
   list_init(&ready_list);
   list_init(&all_list);

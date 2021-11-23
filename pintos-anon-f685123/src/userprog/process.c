@@ -25,6 +25,7 @@ void fd_table_destroy_func(struct hash_elem *e, void *aux UNUSED);
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
    thread id, or TID_ERROR if the thread cannot be created. */
+
 tid_t process_execute(const char *file_name)
 {
   char *fn_copy, *proc_name;
@@ -64,9 +65,12 @@ tid_t process_execute(const char *file_name)
     return TID_ERROR;
   struct process *proc = list_entry(e, struct process, elem);
   sema_down(&(proc->wait));
-  if (!proc->child_started)
-    return TID_ERROR;
-  return tid;
+  int ret_tid = proc->child_started ? tid : -1;
+  return ret_tid;
+  // if ((proc->child_started) == 0)
+  //   return TID_ERROR;
+  // else
+  //   return tid;
 }
 void push_argument(void **esp, int argc, int argv[])
 {
@@ -87,6 +91,17 @@ void push_argument(void **esp, int argc, int argv[])
 }
 /* A thread function that loads a user process and starts it
    running. */
+/*
+  pintos -v -k -T 60 --bochs  --filesys-size=2 
+  -p tests/userprog/exec-once -a exec-once 
+  -p tests/userprog/child-simple -a   child-simple 
+  -- -q  -f run exec-once 
+  < /dev/null 2> tests/userprog/exec-once.errors > tests/userprog/exec-once.output
+
+  pintos -v -k -T 60 --bochs  --filesys-size=2 
+  -p tests/userprog/args-many -a args-many -- -q  -f run 'args-many a b c d e f g h i j k l m n o p q r s t u v' < /dev/null 2> tests/userprog/args-many.errors > tests/userprog/args-many.output
+
+  */
 static void
 start_process(void *file_name_)
 {
@@ -125,6 +140,8 @@ start_process(void *file_name_)
   else /* If load failed, quit. */
   {
     thread_current()->proc->child_started = false;
+    thread_current()->proc->self_alive = false;
+    thread_current()->proc->exit_code = 0xeeee0eee;
     sema_up(&thread_current()->proc->wait);
     palloc_free_page(file_name);
     free(cmd);
@@ -182,7 +199,8 @@ void process_exit(void)
   uint32_t *pd;
   if (cur->proc)
   {
-    printf("%s: exit(%d)\n", cur->name, cur->proc->exit_code);
+    if (cur->proc->exit_code != 0xeeee0eee)
+      printf("%s: exit(%d)\n", cur->name, cur->proc->exit_code);
     hash_destroy(&cur->proc->fd_table, &fd_table_destroy_func);
     cur->proc->self_alive = false;
     if (cur->proc->parent_alive)
@@ -205,6 +223,12 @@ void process_exit(void)
     {
       proc->parent_alive = false;
     }
+  }
+  if (cur->running_procfile)
+  {
+    lock_acquire(&file_sys_lock);
+    file_close(cur->running_procfile);
+    lock_release(&file_sys_lock);
   }
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -330,7 +354,9 @@ bool load(const char *file_name, void (**eip)(void), void **esp)
   process_activate();
 
   /* Open executable file. */
+  lock_acquire(&file_sys_lock); // todo ???
   file = filesys_open(file_name);
+  lock_release(&file_sys_lock);
   if (file == NULL)
   {
     printf("load: %s: open failed\n", file_name);
@@ -413,7 +439,7 @@ bool load(const char *file_name, void (**eip)(void), void **esp)
 
 done:
   /* We arrive here whether the load is successful or not. */
-  file_close(file);
+  // file_close(file); when process exit close this file
   t->running_procfile = file;
   return success;
 }
@@ -570,4 +596,25 @@ void fd_table_destroy_func(struct hash_elem *e, void *aux UNUSED)
   struct file_descriptor *descriptor = hash_entry(e, struct file_descriptor, hash_elem);
   ASSERT(descriptor->file != NULL);
   // close_syscall(descriptor, false);
+}
+struct file_descriptor *
+proc_get_fd_struct(int fd)
+{
+  if (fd < 2)
+    return NULL;
+
+  struct file_descriptor descriptor;
+  descriptor.fd = fd;
+
+  struct thread *t = thread_current();
+  struct hash_elem *found_element = hash_find(&t->proc->fd_table,
+                                              &descriptor.hash_elem);
+  if (found_element == NULL)
+    return NULL;
+
+  struct file_descriptor *open_file_descriptor = hash_entry(found_element,
+                                                            struct file_descriptor,
+                                                            hash_elem);
+
+  return open_file_descriptor;
 }

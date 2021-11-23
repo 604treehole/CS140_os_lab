@@ -4,7 +4,9 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "kernel/console.h"
-
+#include "userprog/pagedir.h"
+#include "userprog/process.h"
+#include "filesys/filesys.h"
 static void syscall_handler(struct intr_frame *);
 
 void syscall_init(void)
@@ -61,11 +63,50 @@ void sys_close(unsigned *ptr, unsigned *eax)
 {
   return true;
 }
+void sys_wait(unsigned *ptr, unsigned *eax)
+{
+  int pid = (int)pop_stack(&ptr);
+  int exit_code = process_wait(pid);
+  *eax = exit_code;
+}
+void sys_exec(unsigned *ptr, unsigned *eax)
+{
+  const char *file = (const char *)pop_stack(&ptr);
+  if (!valid_user_addr((unsigned *)file) || !valid_user_addr((unsigned *)file + 1))
+  {
+    thread_current()->proc->exit_code = -1;
+    thread_exit();
+  }
+  tid_t t = process_execute(file);
+  *eax = t;
+}
+void sys_open(unsigned *ptr, unsigned *eax)
+{
+  const char *file = (const char *)pop_stack(&ptr);
+  if (!valid_user_addr((unsigned *)file) || !valid_user_addr((unsigned *)file + 1))
+  {
+    thread_current()->proc->exit_code = -1;
+    thread_exit();
+  }
+  lock_acquire(&file_sys_lock);
+  struct file *fptr = filesys_open(file);
+  int fd = -1;
+  if (fptr)
+  {
+    fd = thread_current()->proc->next_fd++;
+    struct file_descriptor *fd_struct = (struct file_descriptor *)malloc(sizeof(struct file_descriptor));
+    fd_struct->fd = fd;
+    fd_struct->file = file;
+    hash_insert(&thread_current()->proc->fd_table, &fd_struct->hash_elem);
+  }
+  lock_release(&file_sys_lock);
+  *eax = fd;
+}
 static void
 syscall_handler(struct intr_frame *f UNUSED)
 {
   unsigned *esp_addr = (unsigned *)f->esp;
-  unsigned *eax_addr = (unsigned *)f->eax;
+  unsigned *eax_addr = (unsigned *)&f->eax;
   // int number = *(unsigned int *)(esp_addr);
   int number = pop_stack(&esp_addr);
   switch (number)
@@ -77,10 +118,10 @@ syscall_handler(struct intr_frame *f UNUSED)
     sys_exit(esp_addr);
     break;
   case SYS_EXEC:
-    printf("System call exec.\n");
+    sys_exec(esp_addr, eax_addr);
     break;
   case SYS_WAIT:
-    printf("System call wait.\n");
+    sys_wait(esp_addr, eax_addr);
     break;
   case SYS_CREATE:
     printf("System call create.\n");
@@ -89,7 +130,7 @@ syscall_handler(struct intr_frame *f UNUSED)
     printf("System call remove.\n");
     break;
   case SYS_OPEN:
-    printf("System call open.\n");
+    sys_open(esp_addr, eax_addr);
     break;
   case SYS_FILESIZE:
     printf("System call filesize.\n");
@@ -109,7 +150,6 @@ syscall_handler(struct intr_frame *f UNUSED)
   case SYS_CLOSE:
     printf("System call clsoe.\n");
     break;
-
   default:
     thread_current()->proc->exit_code = -1;
     thread_exit();
