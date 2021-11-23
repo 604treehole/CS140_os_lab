@@ -7,6 +7,7 @@
 #include "userprog/pagedir.h"
 #include "userprog/process.h"
 #include "filesys/filesys.h"
+#include "filesys/file.h"
 static void syscall_handler(struct intr_frame *);
 
 void syscall_init(void)
@@ -41,13 +42,48 @@ bool sys_exit(unsigned int *ptr)
   return true;
 }
 
-bool sys_write(unsigned *ptr, unsigned *eax)
+void sys_read(unsigned *ptr, unsigned *eax)
+{
+  int fd = (int)pop_stack(&ptr);
+  char *buf = (char *)pop_stack(&ptr);
+  unsigned size = pop_stack(&ptr);
+  if (!valid_user_addr((unsigned *)buf) || !valid_user_addr((unsigned *)(buf + size)))
+  {
+    thread_current()->proc->exit_code = -1;
+    thread_exit();
+  }
+  if (fd == 0)
+  {
+    for (int i = 0; i < size; i++)
+      buf[i] = input_getc();
+    *eax = size;
+  }
+  else
+  {
+    struct file_descriptor *descriptor = proc_get_fd_struct(fd);
+    if (descriptor)
+    {
+      lock_acquire(&file_sys_lock);
+      *eax = (int)file_read(descriptor->file, buf, size);
+      lock_release(&file_sys_lock);
+    }
+    else
+    {
+      *eax = -1;
+    }
+  }
+}
+
+void sys_write(unsigned *ptr, unsigned *eax)
 {
   int fd = (int)pop_stack(&ptr);
   const char *buf = (const char *)pop_stack(&ptr);
   unsigned size = pop_stack(&ptr);
   if (!valid_user_addr((unsigned *)buf) || !valid_user_addr((unsigned *)(buf + size)))
-    return false;
+  {
+    thread_current()->proc->exit_code = -1;
+    thread_exit();
+  }
   if (fd == 1)
   {
     putbuf(buf, size);
@@ -55,13 +91,44 @@ bool sys_write(unsigned *ptr, unsigned *eax)
   }
   else
   {
-    printf("System call write.\n");
+    int writed_size = -1;
+    lock_acquire(&file_sys_lock);
+    struct file_descriptor *descriptor = proc_get_fd_struct(fd);
+    if (descriptor)
+    {
+      struct file *f = descriptor->file;
+      writed_size = (int)file_write(f, ptr, size);
+    }
+    lock_release(&file_sys_lock);
+    *eax = writed_size;
   }
-  return true;
 }
-void sys_close(unsigned *ptr, unsigned *eax)
+void sys_seek(unsigned *ptr)
 {
-  return true;
+  int fd = (int)pop_stack(&ptr);
+  unsigned pos = pop_stack(&ptr);
+  lock_acquire(&file_sys_lock);
+  struct file_descriptor *descriptor = proc_get_fd_struct(fd);
+  if (descriptor)
+  {
+    struct file *f = descriptor->file;
+    file_seek(f, pos);
+  }
+  lock_release(&file_sys_lock);
+}
+void sys_tell(unsigned *ptr, unsigned *eax)
+{
+  int fd = (int)pop_stack(&ptr);
+  unsigned pos = 0;
+  lock_acquire(&file_sys_lock);
+  struct file_descriptor *descriptor = proc_get_fd_struct(fd);
+  if (descriptor)
+  {
+    struct file *f = descriptor->file;
+    pos = (unsigned)file_tell(f);
+  }
+  lock_release(&file_sys_lock);
+  *eax = pos;
 }
 void sys_wait(unsigned *ptr, unsigned *eax)
 {
@@ -80,6 +147,31 @@ void sys_exec(unsigned *ptr, unsigned *eax)
   tid_t t = process_execute(file);
   *eax = t;
 }
+void sys_create(unsigned *ptr, unsigned *eax)
+{
+  const char *file = (const char *)pop_stack(&ptr);
+  unsigned initial_size = (unsigned)pop_stack(&ptr);
+  if (!valid_user_addr((unsigned *)file) || !valid_user_addr((unsigned *)file + 1))
+  {
+    thread_current()->proc->exit_code = -1;
+    thread_exit();
+  }
+  lock_acquire(&file_sys_lock);
+  *eax = filesys_create(file, initial_size);
+  lock_release(&file_sys_lock);
+}
+void sys_remove(unsigned *ptr, unsigned *eax)
+{
+  const char *file = (const char *)pop_stack(&ptr);
+  if (!valid_user_addr((unsigned *)file) || !valid_user_addr((unsigned *)file + 1))
+  {
+    thread_current()->proc->exit_code = -1;
+    thread_exit();
+  }
+  lock_acquire(&file_sys_lock);
+  *eax = filesys_remove(file);
+  lock_release(&file_sys_lock);
+}
 void sys_open(unsigned *ptr, unsigned *eax)
 {
   const char *file = (const char *)pop_stack(&ptr);
@@ -96,11 +188,36 @@ void sys_open(unsigned *ptr, unsigned *eax)
     fd = thread_current()->proc->next_fd++;
     struct file_descriptor *fd_struct = (struct file_descriptor *)malloc(sizeof(struct file_descriptor));
     fd_struct->fd = fd;
-    fd_struct->file = file;
+    fd_struct->file = fptr;
     hash_insert(&thread_current()->proc->fd_table, &fd_struct->hash_elem);
   }
   lock_release(&file_sys_lock);
   *eax = fd;
+}
+void sys_filesize(unsigned *ptr, unsigned *eax)
+{
+  int fd = (int)pop_stack(&ptr);
+
+  lock_acquire(&file_sys_lock);
+  struct file_descriptor *descript = proc_get_fd_struct(fd);
+  lock_release(&file_sys_lock);
+  *eax = file_length(descript->file);
+}
+void sys_close(unsigned *ptr, unsigned *eax)
+{
+  int fd = (int)pop_stack(&ptr);
+
+  lock_acquire(&file_sys_lock);
+  struct file_descriptor *descript = proc_get_fd_struct(fd);
+  if (descript)
+  {
+    struct file_descriptor dd;
+    dd.fd = descript->fd;
+    file_close(descript->file);
+    hash_delete(&thread_current()->proc->fd_table, &dd.hash_elem);
+    free(descript);
+  }
+  lock_release(&file_sys_lock);
 }
 static void
 syscall_handler(struct intr_frame *f UNUSED)
@@ -124,31 +241,31 @@ syscall_handler(struct intr_frame *f UNUSED)
     sys_wait(esp_addr, eax_addr);
     break;
   case SYS_CREATE:
-    printf("System call create.\n");
+    sys_create(esp_addr, eax_addr);
     break;
   case SYS_REMOVE:
-    printf("System call remove.\n");
+    sys_remove(esp_addr, eax_addr);
     break;
   case SYS_OPEN:
     sys_open(esp_addr, eax_addr);
     break;
   case SYS_FILESIZE:
-    printf("System call filesize.\n");
+    sys_filesize(esp_addr, eax_addr);
     break;
   case SYS_READ:
-    printf("System call read.\n");
+    sys_read(esp_addr, eax_addr);
     break;
   case SYS_WRITE:
     sys_write(esp_addr, eax_addr);
     break;
   case SYS_SEEK:
-    printf("System call seek.\n");
+    sys_seek(esp_addr);
     break;
   case SYS_TELL:
-    printf("System call tell.\n");
+    sys_tell(esp_addr, eax_addr);
     break;
   case SYS_CLOSE:
-    printf("System call clsoe.\n");
+    sys_close(esp_addr, eax_addr);
     break;
   default:
     thread_current()->proc->exit_code = -1;
