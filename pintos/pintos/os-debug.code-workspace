@@ -1,0 +1,16 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"interrupt.h": "c",
+			"thread.h": "c",
+			"synch.h": "c",
+			"file.h": "c",
+			"timer.h": "c"
+		}
+	}
+}
