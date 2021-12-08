@@ -18,6 +18,8 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "devices/timer.h"
+#include "vm/frame.h"
+#include "vm/page.h"
 static thread_func start_process NO_RETURN;
 static bool load(const char *cmdline, void (**eip)(void), void **esp);
 void fd_table_destroy_func(struct hash_elem *e, void *aux UNUSED);
@@ -192,19 +194,37 @@ int process_wait(tid_t child_tid UNUSED)
   }
   return -1;
 }
-
 /* Free the current process's resources. */
 void process_exit(void)
 {
   struct thread *cur = thread_current();
   struct list_elem *e;
   uint32_t *pd;
+  if (lock_held_by_current_thread(&file_sys_lock))
+  {
+    lock_release(&file_sys_lock); //
+    printf("lock hold sys");
+  }
+  if (lock_held_by_current_thread(&cur->supplemental_page_table_lock))
+  {
+    lock_release(&cur->supplemental_page_table_lock); //
+    printf("lock holder page");
+  }
+  if (cur->running_procfile) // close the exec file
+  {
+    lock_acquire(&file_sys_lock);
+    // file_allow_write(cur->running_procfile);
+    file_close(cur->running_procfile);
+    lock_release(&file_sys_lock);
+  }
   if (cur->proc)
   {
     if (cur->proc->exit_code != 0xeeee0eee)
       printf("%s: exit(%d)\n", cur->name, cur->proc->exit_code);
+
     hash_destroy(&cur->proc->fd_table, &fd_table_destroy_func); // close all files opened
     cur->proc->self_alive = false;
+
     if (cur->proc->parent_alive)
     {
       sema_up(&cur->proc->wait);
@@ -214,6 +234,8 @@ void process_exit(void)
       free(cur->proc);
     }
   }
+  hash_destroy(&cur->supplemental_page_table, userproc_supplemental_page_table_destroy_func);
+
   for (e = list_begin(&cur->children); e != list_end(&cur->children);)
   {
     struct process *proc = list_entry(e, struct process, elem);
@@ -226,12 +248,7 @@ void process_exit(void)
       proc->parent_alive = false;
     }
   }
-  if (cur->running_procfile) // close the exec file
-  {
-    lock_acquire(&file_sys_lock);
-    file_close(cur->running_procfile);
-    lock_release(&file_sys_lock);
-  }
+
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
   pd = cur->pagedir;
@@ -245,7 +262,6 @@ void process_exit(void)
          directory before destroying the process's page
          directory, or our active page directory will be one
          that's been freed (and cleared). */
-    //??
     cur->pagedir = NULL;
     pagedir_activate(NULL);
     pagedir_destroy(pd);
@@ -335,7 +351,19 @@ static bool validate_segment(const struct Elf32_Phdr *, struct file *);
 static bool load_segment(struct file *file, off_t ofs, uint8_t *upage,
                          uint32_t read_bytes, uint32_t zero_bytes,
                          bool writable);
+void stack_growing(struct thread *t, void *ptr)
+{
+  void *new_page_virtual = pg_round_down(ptr);
+  struct page *p = create_in_memory_page_info(new_page_virtual, true);
+  insert_page_info(&t->supplemental_page_table, p);
 
+  void *page_ptr_frame = frame_allocator_get_user_page(p, PAL_ZERO, true);
+  if (page_ptr_frame == NULL)
+  {
+    PANIC("error : stack growing null");
+  }
+  p->page_status |= PAGE_IN_MEMORY;
+}
 /* Loads an ELF executable from FILE_NAME into the current thread.
    Stores the executable's entry point into *EIP
    and its initial stack pointer into *ESP.
@@ -348,7 +376,7 @@ bool load(const char *file_name, void (**eip)(void), void **esp)
   off_t file_ofs;
   bool success = false;
   int i;
-
+  hash_init(&(t->supplemental_page_table), userproc_supplemental_page_table_hash, userproc_supplemental_page_table_less, NULL);
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create();
   if (t->pagedir == NULL)
@@ -454,8 +482,6 @@ done:
 
 /* load() helpers. */
 
-static bool install_page(void *upage, void *kpage, bool writable);
-
 /* Checks whether PHDR describes a valid, loadable segment in
    FILE and returns true if so, false otherwise. */
 static bool
@@ -515,6 +541,60 @@ validate_segment(const struct Elf32_Phdr *phdr, struct file *file)
 
    Return true if successful, false if a memory allocation error
    or disk read error occurs. */
+
+bool read_executable_page(struct file *file, size_t offset, void *kpage, size_t page_read_bytes, size_t page_zero_bytes)
+{
+  lock_acquire(&file_sys_lock);
+  file_seek(file, offset);
+  int bytes_read = file_read(file, kpage, page_read_bytes);
+  lock_release(&file_sys_lock);
+  if (bytes_read != (int)page_read_bytes)
+    return false;
+  memset((int)kpage + page_read_bytes, 0, page_zero_bytes);
+  return true;
+}
+bool load_executable_page(struct file *file, off_t offset, void *upage,
+                          size_t page_read_bytes, size_t page_zero_bytes, bool writable)
+{
+  struct hash *supplemental_page_table = &thread_current()->supplemental_page_table;
+  struct page *p;
+  if (page_read_bytes == PGSIZE)
+  {
+    struct page_filesys_info *filesys_info = malloc(sizeof(struct page_filesys_info));
+    filesys_info->file = file;
+    filesys_info->offset = offset;
+    filesys_info->length = page_read_bytes;
+    p = create_lazy_page_info(upage, filesys_info, writable);
+
+    lock_acquire(&thread_current()->supplemental_page_table_lock);
+    insert_page_info(supplemental_page_table, p);
+    lock_release(&thread_current()->supplemental_page_table_lock);
+  }
+  else if (page_zero_bytes == PGSIZE)
+  {
+    p = create_lazy_zero_page_info(upage);
+    lock_acquire(&thread_current()->supplemental_page_table_lock);
+    insert_page_info(supplemental_page_table, p);
+    lock_release(&thread_current()->supplemental_page_table_lock);
+  }
+  else
+  {
+    struct page_filesys_info *filesys_info = malloc(sizeof(struct page_filesys_info));
+    filesys_info->file = file;
+    filesys_info->offset = offset;
+    filesys_info->length = page_read_bytes;
+    p = create_lazy_page_info(upage, filesys_info, writable);
+    lock_acquire(&thread_current()->supplemental_page_table_lock);
+    insert_page_info(supplemental_page_table, p);
+    lock_release(&thread_current()->supplemental_page_table_lock);
+    uint8_t *kpage = frame_allocator_get_user_page(p, 0, true);
+    if (!read_executable_page(file, offset, kpage, page_read_bytes, page_zero_bytes))
+      return false;
+    p->page_status |= PAGE_IN_MEMORY;
+  }
+  return true;
+}
+
 static bool
 load_segment(struct file *file, off_t ofs, uint8_t *upage,
              uint32_t read_bytes, uint32_t zero_bytes, bool writable)
@@ -522,8 +602,8 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
   ASSERT((read_bytes + zero_bytes) % PGSIZE == 0);
   ASSERT(pg_ofs(upage) == 0);
   ASSERT(ofs % PGSIZE == 0);
-
-  file_seek(file, ofs);
+  unsigned offset = ofs;
+  // file_seek(file, ofs);
   while (read_bytes > 0 || zero_bytes > 0)
   {
     /* Calculate how to fill this page.
@@ -531,31 +611,32 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
          and zero the final PAGE_ZERO_BYTES bytes. */
     size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
     size_t page_zero_bytes = PGSIZE - page_read_bytes;
-
+    if (!load_executable_page(file, offset, upage, page_read_bytes, page_zero_bytes, writable))
+      return false;
     /* Get a page of memory. */
-    uint8_t *kpage = palloc_get_page(PAL_USER);
-    if (kpage == NULL)
-      return false;
+    // uint8_t *kpage = palloc_get_page(PAL_USER);
+    // if (kpage == NULL)
+    //   return false;
+    // /* Load this page. */
+    // if (file_read(file, kpage, page_read_bytes) != (int)page_read_bytes)
+    // {
+    //   palloc_free_page(kpage);
+    //   return false;
+    // }
+    // memset(kpage + page_read_bytes, 0, page_zero_bytes);
 
-    /* Load this page. */
-    if (file_read(file, kpage, page_read_bytes) != (int)page_read_bytes)
-    {
-      palloc_free_page(kpage);
-      return false;
-    }
-    memset(kpage + page_read_bytes, 0, page_zero_bytes);
-
-    /* Add the page to the process's address space. */
-    if (!install_page(upage, kpage, writable))
-    {
-      palloc_free_page(kpage);
-      return false;
-    }
+    // /* Add the page to the process's address space. */
+    // if (!install_page(upage, kpage, writable))
+    // {
+    //   palloc_free_page(kpage);
+    //   return false;
+    // }
 
     /* Advance. */
     read_bytes -= page_read_bytes;
     zero_bytes -= page_zero_bytes;
     upage += PGSIZE;
+    offset += PGSIZE;
   }
   return true;
 }
@@ -568,15 +649,27 @@ setup_stack(void **esp)
   uint8_t *kpage;
   bool success = false;
 
-  kpage = palloc_get_page(PAL_USER | PAL_ZERO);
+  // kpage = palloc_get_page(PAL_USER | PAL_ZERO);
+  // if (kpage != NULL)
+  // {
+  //   success = install_page(((uint8_t *)PHYS_BASE) - PGSIZE, kpage, true);
+  //   if (success)
+  //     *esp = PHYS_BASE;
+  //   else
+  //     palloc_free_page(kpage);
+  // }
+  void *user_vaddr = ((uint8_t *)PHYS_BASE) - PGSIZE;
+  struct page *p = create_in_memory_page_info(user_vaddr, true);
+  lock_acquire(&thread_current()->supplemental_page_table_lock);
+  insert_page_info(&thread_current()->supplemental_page_table, p);
+  lock_release(&thread_current()->supplemental_page_table_lock);
+  kpage = frame_allocator_get_user_page(p, PAL_ZERO, true);
   if (kpage != NULL)
   {
-    success = install_page(((uint8_t *)PHYS_BASE) - PGSIZE, kpage, true);
-    if (success)
-      *esp = PHYS_BASE;
-    else
-      palloc_free_page(kpage);
+    *esp = PHYS_BASE;
+    success = true;
   }
+  p->page_status |= PAGE_IN_MEMORY;
   return success;
 }
 
@@ -589,8 +682,7 @@ setup_stack(void **esp)
    with palloc_get_page().
    Returns true on success, false if UPAGE is already mapped or
    if memory allocation fails. */
-static bool
-install_page(void *upage, void *kpage, bool writable)
+bool install_page(void *upage, void *kpage, bool writable)
 {
   struct thread *t = thread_current();
 

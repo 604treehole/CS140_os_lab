@@ -2,6 +2,7 @@
 #define THREADS_THREAD_H
 #include <debug.h>
 #include <list.h>
+#include <hash.h>
 #include <stdint.h>
 #include "threads/synch.h"
 #include "userprog/process.h"
@@ -100,6 +101,10 @@ struct thread
    struct process *proc;
    struct list children;
 
+   struct lock supplemental_page_table_lock; /* Prevents race conditions for access of supplemental page table */
+   struct hash supplemental_page_table;
+   struct hash mmap_table;
+   int next_mmapid;
    // #endif
 
    /* Owned by thread.c. */
@@ -141,5 +146,5 @@ int thread_get_nice(void);
 void thread_set_nice(int);
 int thread_get_recent_cpu(void);
 int thread_get_load_avg(void);
-
+struct thread *thread_find_thread(tid_t tid);
 #endif /* threads/thread.h */

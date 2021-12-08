@@ -2,12 +2,16 @@
 #include <stdio.h>
 #include <syscall-nr.h>
 #include "threads/interrupt.h"
+#include "threads/vaddr.h"
 #include "threads/thread.h"
 #include "kernel/console.h"
 #include "userprog/pagedir.h"
 #include "userprog/process.h"
+#include "userprog/exception.h"
 #include "filesys/filesys.h"
 #include "filesys/file.h"
+#include "vm/page.h"
+
 static void syscall_handler(struct intr_frame *);
 
 void syscall_init(void)
@@ -16,7 +20,21 @@ void syscall_init(void)
 }
 bool valid_user_addr(unsigned *addr)
 {
-  return addr && addr < 0xc0000000 && pagedir_get_page(thread_current()->pagedir, addr);
+  return addr && addr < 0xc0000000;
+  // && pagedir_get_page(thread_current()->pagedir, addr)
+}
+
+/* Reads a byte at user virtual address UADDR.
+   UADDR must be below PHYS_BASE.
+   Returns the byte value if successful, -1 if a segfault
+   occurred. */
+static int load_user_uaddr(const uint8_t *uaddr)
+{
+  int result;
+  asm __volatile__("movl $1f, %0; movzbl %1, %0; 1:"
+                   : "=&a"(result)
+                   : "m"(*uaddr));
+  return result;
 }
 unsigned int pop_stack(unsigned int **ptr)
 {
@@ -52,6 +70,33 @@ void sys_read(unsigned *ptr, unsigned *eax)
     thread_current()->proc->exit_code = -1;
     thread_exit();
   }
+  void *buffer_page; // check stack grow
+  lock_acquire(&thread_current()->supplemental_page_table_lock);
+  for (buffer_page = pg_round_down(buf); buffer_page <= buf + size; buffer_page += 4096)
+  {
+    if (is_in_stack(buffer_page, ptr))
+    {
+      struct page p;
+      p.vaddr = buffer_page;
+      struct hash_elem *e = hash_find(&thread_current()->supplemental_page_table, &p.hash_elem);
+      if (!e)
+      {
+        stack_growing(thread_current(), buffer_page);
+      }
+    }
+  }
+  if (!supplemental_entry_exists(&thread_current()->supplemental_page_table, buf, NULL) || !supplemental_entry_exists(&thread_current()->supplemental_page_table, buf + size, NULL))
+  {
+    thread_current()->proc->exit_code = -1;
+    thread_exit();
+  }
+  if (!supplemental_is_page_writable(&thread_current()->supplemental_page_table, buf))
+  {
+    thread_current()->proc->exit_code = -1;
+    thread_exit();
+  }
+  lock_release(&thread_current()->supplemental_page_table_lock);
+  load_user_uaddr(buf);
   if (fd == 0)
   {
     for (int i = 0; i < size; i++)
@@ -84,6 +129,13 @@ void sys_write(unsigned *ptr, unsigned *eax)
     thread_current()->proc->exit_code = -1;
     thread_exit();
   }
+  if (!supplemental_entry_exists(&thread_current()->supplemental_page_table, buf, NULL) || !supplemental_entry_exists(&thread_current()->supplemental_page_table, buf + size, NULL))
+  {
+    thread_current()->proc->exit_code = -1;
+    thread_exit();
+  }
+  load_user_uaddr(buf);
+  load_user_uaddr(buf + size);
   if (fd == 1)
   {
     putbuf(buf, size);
@@ -97,7 +149,9 @@ void sys_write(unsigned *ptr, unsigned *eax)
     if (descriptor)
     {
       struct file *f = descriptor->file;
-      writed_size = (int)file_write(f, buf, size);
+
+      // printf("finish %d", fd);
+      writed_size = (int)file_write(f, buf, size); // blocked
     }
     lock_release(&file_sys_lock);
     *eax = writed_size;
@@ -156,6 +210,7 @@ void sys_create(unsigned *ptr, unsigned *eax)
     thread_current()->proc->exit_code = -1;
     thread_exit();
   }
+  load_user_uaddr(file);
   lock_acquire(&file_sys_lock);
   *eax = filesys_create(file, initial_size);
   lock_release(&file_sys_lock);
@@ -180,6 +235,7 @@ void sys_open(unsigned *ptr, unsigned *eax)
     thread_current()->proc->exit_code = -1;
     thread_exit();
   }
+  load_user_uaddr(file);
   lock_acquire(&file_sys_lock);
   struct file *fptr = filesys_open(file);
   int fd = -1;

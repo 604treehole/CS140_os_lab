@@ -4,7 +4,10 @@
 #include "userprog/gdt.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
-
+#include "threads/vaddr.h"
+#include "vm/page.h"
+#include "vm/frame.h"
+#include "userprog/process.h"
 /* Number of page faults processed. */
 static long long page_fault_cnt;
 
@@ -105,7 +108,38 @@ kill(struct intr_frame *f)
       thread_exit();
    }
 }
+int is_in_stack(void *ptr, unsigned *esp)
+{ // 8mb the PUSHA instruction pushes 32 bytes at once, so it can fault 32 bytes below the stack pointer.
+   return ((PHYS_BASE - pg_round_down(ptr)) <= 8388608 && (unsigned *)ptr >= ((unsigned)esp - 32));
+}
+bool lazy_load_file(struct page *page)
+{
+   struct page_filesys_info *filesys_info = (struct page_filesys_info *)page->aux;
+   struct file *file = filesys_info->file;
+   size_t ofs = filesys_info->offset;
+   void *kpage = frame_allocator_get_user_page(page, 0, page->writable);
+   if (!read_executable_page(file, ofs, kpage, filesys_info->length, 0))
+      return false;
+   page->page_status |= PAGE_IN_MEMORY;
+   return true;
+}
 
+bool zero_page(struct page *page)
+{
+   frame_allocator_get_user_page(page, PAL_ZERO, true);
+   page->page_status |= PAGE_IN_MEMORY;
+   return true;
+}
+bool swap_page(struct page *page)
+{
+   struct swap_entry *swap_info = (struct swap_entry *)page->aux;
+   void *kernel_vaddr = frame_allocator_get_user_page(page, 0, true);
+   swap_load(swap_info, page, kernel_vaddr);
+   swap_free(swap_info);
+   page->page_status &= ~PAGE_SWAP;
+   page->page_status |= PAGE_IN_MEMORY;
+   return true;
+}
 /* Page fault handler.  This is a skeleton that must be filled in
    to implement virtual memory.  Some solutions to project 2 may
    also require modifying this code.
@@ -124,7 +158,7 @@ page_fault(struct intr_frame *f)
    bool write;       /* True: access was write, false: access was read. */
    bool user;        /* True: access by user, false: access by kernel. */
    void *fault_addr; /* Fault address. */
-
+   bool stack_grow = false;
    /* Obtain faulting address, the virtual address that was
      accessed to cause the fault.  It may point to code or to
      data.  It is not necessarily the address of the instruction
@@ -134,27 +168,70 @@ page_fault(struct intr_frame *f)
      (#PF)". */
    asm("movl %%cr2, %0"
        : "=r"(fault_addr));
-
    /* Turn interrupts back on (they were only off so that we could
      be assured of reading CR2 before it changed). */
    intr_enable();
-
-   /* Count page faults. */
-   page_fault_cnt++;
-
    /* Determine cause. */
    not_present = (f->error_code & PF_P) == 0;
    write = (f->error_code & PF_W) != 0;
    user = (f->error_code & PF_U) != 0;
-   thread_current()->proc->exit_code = -1;
+
+   if (!not_present || !fault_addr || !(fault_addr < 0xc0000000))
+   {
+      thread_current()->proc->exit_code = -1; // thread exit
+      thread_exit();
+      return;
+   }
+   void *vaddr = pg_round_down(fault_addr);
+   struct thread *t = thread_current();
+   struct page p;
+   p.vaddr = vaddr;
+   lock_acquire(&t->supplemental_page_table_lock);
+   struct hash_elem *e = hash_find(&t->supplemental_page_table, &p.hash_elem);
+   if (!e)
+   {
+      if (!is_in_stack(fault_addr, f->esp))
+      {
+         thread_current()->proc->exit_code = -1;
+         thread_exit();
+         return;
+      }
+      lock_release(&t->supplemental_page_table_lock); // must release
+      stack_growing(thread_current(), fault_addr);    // require lock agine
+      return;
+   }
+   struct page *page = hash_entry(e, struct page, hash_elem);
+   enum page_status status = page->page_status;
+   if (status & PAGE_SWAP)
+   {
+      if (!swap_page(page))
+         kill(f);
+   }
+   else if (status & PAGE_ZERO)
+   {
+      if (!zero_page(page))
+         kill(f);
+   }
+   else if (status & PAGE_LAZYEXEC)
+   {
+      if (!lazy_load_file(page))
+         kill(f);
+   }
+   else
+   {
+      // todo map
+   }
+   lock_release(&t->supplemental_page_table_lock);
+   return;
    /* To implement virtual memory, delete the rest of the function
      body, and replace it with code that brings in the page to
      which fault_addr refers. */
-
-   printf("Page fault at %p: %s error %s page in %s context.\n",
-          fault_addr,
-          not_present ? "not present" : "rights violation",
-          write ? "writing" : "reading",
-          user ? "user" : "kernel");
-   kill(f);
+   /* Count page faults. */
+   // page_fault_cnt++;
+   // printf("Page fault at %p: %s error %s page in %s context.\n",
+   //        fault_addr,
+   //        not_present ? "not present" : "rights violation",
+   //        write ? "writing" : "reading",
+   //        user ? "user" : "kernel");
+   // kill(f);
 }

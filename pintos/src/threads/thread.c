@@ -197,6 +197,8 @@ tid_t thread_create(const char *name, int priority,
   proc->exit_code = 2140483640;
   list_init(&t->children);
   list_push_back(&thread_current()->children, &proc->elem);
+  lock_init(&(t->supplemental_page_table_lock));
+
   // #endif
   /* Stack frame for kernel_thread(). */
   kf = alloc_frame(t, sizeof *kf);
@@ -470,7 +472,6 @@ init_thread(struct thread *t, const char *name, int priority)
   t->stack = (uint8_t *)t + PGSIZE;
   t->priority = priority;
   t->magic = THREAD_MAGIC;
-  // file
 
   old_level = intr_disable();
   list_push_back(&all_list, &t->allelem);
@@ -602,4 +603,17 @@ bool fd_table_less_func(const struct hash_elem *a, const struct hash_elem *b, vo
   struct file_descriptor *descriptor_a = hash_entry(a, struct file_descriptor, hash_elem);
   struct file_descriptor *descriptor_b = hash_entry(b, struct file_descriptor, hash_elem);
   return descriptor_a->fd < descriptor_b->fd;
+}
+struct thread *
+thread_find_thread(tid_t tid)
+{
+  struct list_elem *e;
+  for (e = list_begin(&all_list); e != list_end(&all_list);
+       e = list_next(e))
+  {
+    struct thread *t = list_entry(e, struct thread, allelem);
+    if (t->tid == tid)
+      return t;
+  }
+  return NULL;
 }

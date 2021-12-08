@@ -24,7 +24,9 @@ struct process
     struct list_elem elem;
     struct semaphore wait; // q
 };
-
+bool install_page(void *upage, void *kpage, bool writable);
+void stack_growing(struct thread *t, void *ptr);
+bool read_executable_page(struct file *file, size_t offset, void *kpage, size_t page_read_bytes, size_t page_zero_bytes);
 tid_t process_execute(const char *file_name);
 int process_wait(tid_t);
 void process_exit(void);

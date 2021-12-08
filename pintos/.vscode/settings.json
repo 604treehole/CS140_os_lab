@@ -1,0 +1,19 @@
+{
+    "editor.formatOnSave": true,
+    "C_Cpp.formatting": "clangFormat",
+    "files.associations": {
+        "io.h": "c",
+        "thread.h": "c",
+        "interrupt.h": "c",
+        "process.h": "c",
+        "exception.h": "c",
+        "*.inc": "c",
+        "lib.h": "c",
+        "main.h": "c",
+        "arc4.h": "c",
+        "parallel-merge.h": "c",
+        "array": "c",
+        "initializer_list": "c",
+        "utility": "c"
+    },
+}

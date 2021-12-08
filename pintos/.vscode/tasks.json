@@ -18,6 +18,14 @@
             }
         },
         {
+            "label": "[P3] compile",
+            "type": "shell",
+            "command": "make",
+            "options": {
+                "cwd": "${workspaceFolder}/src/vm"
+            }
+        },
+        {
             "label": "[P1] Run Test in GDB mode",
             "type": "shell",
             "isBackground": true,
@@ -71,9 +79,40 @@
                 "[P2] compile"
             ],
             // "command": "pintos  -k -T 60 --bochs --gdb --filesys-size=2 -p tests/userprog/${input:prog_name} -a ${input:prog_name} -- -q  -f run '${input:args}'",
-            "command": "pintos -v -k -T 60 --bochs --gdb --filesys-size=2 -p tests/userprog/rox-child -a rox-child -p tests/userprog/child-rox -a child-rox -- -q  -f run rox-child",
+            "command": "pintos -v -k -T 60 --bochs --gdb --filesys-size=2 -p tests/userprog/create-bad-ptr -a create-bad-ptr --swap-size=4 -- -q  -f run create-bad-ptr",
             "options": {
                 "cwd": "${workspaceFolder}/src/userprog/build"
+            }
+        },
+        {
+            "label": "[P3] Run Test in GDB mode",
+            "type": "shell",
+            "isBackground": true,
+            "problemMatcher": [
+                {
+                    "pattern": [
+                        {
+                            "regexp": ".",
+                            "file": 1,
+                            "location": 2,
+                            "message": 3
+                        }
+                    ],
+                    "background": {
+                        "activeOnStart": true,
+                        "beginsPattern": ".",
+                        "endsPattern": ".",
+                    }
+                }
+            ],
+            "dependsOn": [
+                "[P3] compile"
+            ],
+            //--filesys-size=2 -p tests/vm/page-parallel -a page-parallel -p tests/vm/child-linear -a child-linear --swap-size=4 -- -q  -f run page-parallel
+            // "command": "pintos -v -k -T 60 --bochs --gdb --filesys-size=2 -p tests/vm/pt-grow-stk-sc -a pt-grow-stk-sc --swap-size=4 -- -q  -f run pt-grow-stk-sc",
+            "command": "pintos -v -k -T 60 --bochs --gdb  --filesys-size=2 -p tests/vm/page-merge-stk -a page-merge-stk -p tests/vm/child-qsort -a child-qsort --swap-size=4 -- -q  -f run page-merge-stk",
+            "options": {
+                "cwd": "${workspaceFolder}/src/vm/build"
             }
         }
     ],
