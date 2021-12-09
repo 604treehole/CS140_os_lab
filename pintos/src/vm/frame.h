@@ -22,6 +22,8 @@ void frame_allocator_free_user_page(void *kernel_vaddr, bool locked);
 void frame_map(void *frame_addr, struct page *page, bool writable);
 void frame_map(void *frame_addr, struct page *page, bool writable);
 void frame_unmap(void *frame_addr);
+void pin_frame(void *kaddr);
+void unpin_frame(void *kaddr);
 
 static unsigned frame_hash(const struct hash_elem *e, void *aux);
 static bool frame_less(const struct hash_elem *a, const struct hash_elem *b, void *aux);

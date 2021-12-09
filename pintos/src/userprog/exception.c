@@ -112,34 +112,7 @@ int is_in_stack(void *ptr, unsigned *esp)
 { // 8mb the PUSHA instruction pushes 32 bytes at once, so it can fault 32 bytes below the stack pointer.
    return ((PHYS_BASE - pg_round_down(ptr)) <= 8388608 && (unsigned *)ptr >= ((unsigned)esp - 32));
 }
-bool lazy_load_file(struct page *page)
-{
-   struct page_filesys_info *filesys_info = (struct page_filesys_info *)page->aux;
-   struct file *file = filesys_info->file;
-   size_t ofs = filesys_info->offset;
-   void *kpage = frame_allocator_get_user_page(page, 0, page->writable);
-   if (!read_executable_page(file, ofs, kpage, filesys_info->length, 0))
-      return false;
-   page->page_status |= PAGE_IN_MEMORY;
-   return true;
-}
 
-bool zero_page(struct page *page)
-{
-   frame_allocator_get_user_page(page, PAL_ZERO, true);
-   page->page_status |= PAGE_IN_MEMORY;
-   return true;
-}
-bool swap_page(struct page *page)
-{
-   struct swap_entry *swap_info = (struct swap_entry *)page->aux;
-   void *kernel_vaddr = frame_allocator_get_user_page(page, 0, true);
-   swap_load(swap_info, page, kernel_vaddr);
-   swap_free(swap_info);
-   page->page_status &= ~PAGE_SWAP;
-   page->page_status |= PAGE_IN_MEMORY;
-   return true;
-}
 /* Page fault handler.  This is a skeleton that must be filled in
    to implement virtual memory.  Some solutions to project 2 may
    also require modifying this code.
@@ -175,7 +148,6 @@ page_fault(struct intr_frame *f)
    not_present = (f->error_code & PF_P) == 0;
    write = (f->error_code & PF_W) != 0;
    user = (f->error_code & PF_U) != 0;
-
    if (!not_present || !fault_addr || !(fault_addr < 0xc0000000))
    {
       thread_current()->proc->exit_code = -1; // thread exit
@@ -186,6 +158,16 @@ page_fault(struct intr_frame *f)
    struct thread *t = thread_current();
    struct page p;
    p.vaddr = vaddr;
+   // if (lock_held_by_current_thread(&file_sys_lock))
+   // {
+   //    lock_release(&file_sys_lock); //
+   //    printf("lock hold sys");
+   // }
+   // if (lock_held_by_current_thread(&thread_current()->supplemental_page_table_lock))
+   // {
+   //    lock_release(&thread_current()->supplemental_page_table_lock); //
+   //    printf("lock holder page");
+   // }
    lock_acquire(&t->supplemental_page_table_lock);
    struct hash_elem *e = hash_find(&t->supplemental_page_table, &p.hash_elem);
    if (!e)
@@ -200,38 +182,20 @@ page_fault(struct intr_frame *f)
       stack_growing(thread_current(), fault_addr);    // require lock agine
       return;
    }
-   struct page *page = hash_entry(e, struct page, hash_elem);
-   enum page_status status = page->page_status;
-   if (status & PAGE_SWAP)
+   lock_release(&t->supplemental_page_table_lock);
+   int res = vm_load_page(&t->supplemental_page_table, vaddr);
+   if (res)
    {
-      if (!swap_page(page))
-         kill(f);
-   }
-   else if (status & PAGE_ZERO)
-   {
-      if (!zero_page(page))
-         kill(f);
-   }
-   else if (status & PAGE_LAZYEXEC)
-   {
-      if (!lazy_load_file(page))
-         kill(f);
+      return;
    }
    else
    {
-      // todo map
+      page_fault_cnt++;
+      printf("Page fault at %p: %s error %s page in %s context.\n",
+             fault_addr,
+             not_present ? "not present" : "rights violation",
+             write ? "writing" : "reading",
+             user ? "user" : "kernel");
+      kill(f);
    }
-   lock_release(&t->supplemental_page_table_lock);
-   return;
-   /* To implement virtual memory, delete the rest of the function
-     body, and replace it with code that brings in the page to
-     which fault_addr refers. */
-   /* Count page faults. */
-   // page_fault_cnt++;
-   // printf("Page fault at %p: %s error %s page in %s context.\n",
-   //        fault_addr,
-   //        not_present ? "not present" : "rights violation",
-   //        write ? "writing" : "reading",
-   //        user ? "user" : "kernel");
-   // kill(f);
 }

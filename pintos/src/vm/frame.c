@@ -12,7 +12,16 @@ void frame_table_init(void)
     lock_init(&frame_table_lock);
     lock_init(&frame_allocation_lock);
 }
-
+static struct frame *find_frame_by_kaddr(void *kaddr)
+{
+    struct frame new_fr;
+    new_fr.frame_addr = kaddr;
+    struct hash_elem *e = hash_find(&frame_table, &(new_fr.hash_elem));
+    if (e == NULL)
+        return NULL;
+    return hash_entry(e, struct frame, hash_elem);
+}
+// struct frame* frame_find()
 /*在frame_table上分配一个frame并映射到page*/
 void frame_map(void *frame_addr, struct page *page, bool writable)
 {
@@ -25,7 +34,7 @@ void frame_map(void *frame_addr, struct page *page, bool writable)
     new_fr->frame_addr = frame_addr;
     new_fr->owner_id = thread_current()->tid;
     new_fr->unused_count = 0;
-
+    page->kaddr = frame_addr;
     lock_acquire(&frame_table_lock);
     hash_insert(&frame_table, &new_fr->hash_elem); //插入frame
     lock_release(&frame_table_lock);
@@ -66,6 +75,7 @@ void *frame_allocator_get_user_page(struct page *page, enum palloc_flags flags, 
         kernel_vaddr = palloc_get_page(PAL_USER | flags);
         ASSERT(kernel_vaddr)
     }
+
     if (!install_page(user_vaddr, kernel_vaddr, writable)) //从用户虚拟地址向内核虚拟地址的映射，且将映射关系添加进页目录中
     {
         PANIC("Could not install user page %p", user_vaddr);
@@ -92,8 +102,6 @@ void frame_allocator_free_user_page(void *kernel_vaddr, bool is_locked)
         PANIC("Frame doesn't exist in frame table.");
 
     struct frame *f = hash_entry(e, struct frame, hash_elem); //获取frame
-    if (!f)
-        PANIC("Could not load frame info from frame table");
 
     f->page->page_status &= ~PAGE_IN_MEMORY; //
 
@@ -151,6 +159,21 @@ frame_allocator_save_frame(struct frame *f)
         swap_save(s, (void *)f->frame_addr);
     }
 }
+void pin_frame(void *kaddr)
+{
+    lock_acquire(&frame_allocation_lock);
+    struct frame *fr = find_frame_by_kaddr(kaddr);
+    fr->unused_count = -1;
+    lock_release(&frame_allocation_lock);
+}
+void unpin_frame(void *kaddr)
+{
+    lock_acquire(&frame_allocation_lock);
+    struct frame *fr = find_frame_by_kaddr(kaddr);
+    fr->unused_count = -1;
+    lock_release(&frame_allocation_lock);
+}
+
 /**/
 struct frame *
 frame_allocator_choose_eviction_frame(void)
@@ -172,6 +195,10 @@ frame_allocator_choose_eviction_frame(void)
         t = thread_find_thread(f->owner_id);
         dirty = pagedir_is_dirty(t->pagedir, f->frame_addr);
         accessed = pagedir_is_accessed(t->pagedir, f->frame_addr);
+        if (f->unused_count < 0)
+        {
+            continue;
+        }
         if (accessed)
         {
             if (!accessed_candidate)
@@ -194,7 +221,7 @@ frame_allocator_choose_eviction_frame(void)
         else
             f->unused_count++;
 
-        if (++f->unused_count > least_used && !(f->page->page_status & PAGE_LAZYEXEC))
+        if (++f->unused_count > least_used) // && !(f->page->page_status & PAGE_LAZYEXEC)
         {
             eviction_candidate = f;
             dirty_candidate = dirty;

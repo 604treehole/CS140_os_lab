@@ -18,16 +18,6 @@ void syscall_init(void)
 {
   intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall");
 }
-bool valid_user_addr(unsigned *addr)
-{
-  return addr && addr < 0xc0000000;
-  // && pagedir_get_page(thread_current()->pagedir, addr)
-}
-
-/* Reads a byte at user virtual address UADDR.
-   UADDR must be below PHYS_BASE.
-   Returns the byte value if successful, -1 if a segfault
-   occurred. */
 static int load_user_uaddr(const uint8_t *uaddr)
 {
   int result;
@@ -36,10 +26,21 @@ static int load_user_uaddr(const uint8_t *uaddr)
                    : "m"(*uaddr));
   return result;
 }
+bool valid_user_addr(unsigned *addr)
+{
+  return addr && addr < 0xc0000000 && -1 != load_user_uaddr(addr);
+  // && pagedir_get_page(thread_current()->pagedir, addr)
+}
+
+/* Reads a byte at user virtual address UADDR.
+   UADDR must be below PHYS_BASE.
+   Returns the byte value if successful, -1 if a segfault
+   occurred. */
+
 unsigned int pop_stack(unsigned int **ptr)
 {
   if (!valid_user_addr((unsigned *)(*ptr)) ||
-      !valid_user_addr((unsigned *)(*ptr) + 1))
+      !valid_user_addr((int)*ptr + 3))
   {
     thread_current()->proc->exit_code = -1;
     thread_exit();
@@ -47,6 +48,26 @@ unsigned int pop_stack(unsigned int **ptr)
   unsigned int top = (unsigned int)(**ptr);
   *ptr += 1;
   return top;
+}
+void preload_and_pin_buf_addr(const void *buffer, size_t size)
+{
+  struct supplemental_page_table *tb = &thread_current()->supplemental_page_table;
+  void *upage;
+  for (upage = pg_round_down(buffer); upage < buffer + size; upage += PGSIZE)
+  {
+    vm_load_page(tb, upage);
+    pin_user_page(tb, upage);
+  }
+}
+
+void unpin_preloaded_buf_addr(const void *buffer, size_t size)
+{
+  struct supplemental_page_table *tb = &thread_current()->supplemental_page_table;
+  void *upage;
+  for (upage = pg_round_down(buffer); upage < buffer + size; upage += PGSIZE)
+  {
+    unpin_user_page(tb, upage);
+  }
 }
 void sys_halt(struct intr_frame *f)
 {
@@ -65,13 +86,12 @@ void sys_read(unsigned *ptr, unsigned *eax)
   int fd = (int)pop_stack(&ptr);
   char *buf = (char *)pop_stack(&ptr);
   unsigned size = pop_stack(&ptr);
-  if (!valid_user_addr((unsigned *)buf) || !valid_user_addr((unsigned *)(buf + size)))
+  if (!(buf && buf < 0xc0000000) || !((buf + size) && (buf + size) < 0xc0000000))
   {
     thread_current()->proc->exit_code = -1;
     thread_exit();
   }
   void *buffer_page; // check stack grow
-  lock_acquire(&thread_current()->supplemental_page_table_lock);
   for (buffer_page = pg_round_down(buf); buffer_page <= buf + size; buffer_page += 4096)
   {
     if (is_in_stack(buffer_page, ptr))
@@ -85,6 +105,7 @@ void sys_read(unsigned *ptr, unsigned *eax)
       }
     }
   }
+  // lock_release(&thread_current()->supplemental_page_table_lock);  ???
   if (!supplemental_entry_exists(&thread_current()->supplemental_page_table, buf, NULL) || !supplemental_entry_exists(&thread_current()->supplemental_page_table, buf + size, NULL))
   {
     thread_current()->proc->exit_code = -1;
@@ -95,8 +116,11 @@ void sys_read(unsigned *ptr, unsigned *eax)
     thread_current()->proc->exit_code = -1;
     thread_exit();
   }
-  lock_release(&thread_current()->supplemental_page_table_lock);
-  load_user_uaddr(buf);
+  if (-1 == load_user_uaddr(buf))
+  {
+    thread_current()->proc->exit_code = -1;
+    thread_exit();
+  }
   if (fd == 0)
   {
     for (int i = 0; i < size; i++)
@@ -106,6 +130,7 @@ void sys_read(unsigned *ptr, unsigned *eax)
   else
   {
     struct file_descriptor *descriptor = proc_get_fd_struct(fd);
+    preload_and_pin_buf_addr(buf, size);
     if (descriptor)
     {
       lock_acquire(&file_sys_lock);
@@ -116,6 +141,7 @@ void sys_read(unsigned *ptr, unsigned *eax)
     {
       *eax = -1;
     }
+    unpin_preloaded_buf_addr(buf, size);
   }
 }
 
@@ -144,16 +170,16 @@ void sys_write(unsigned *ptr, unsigned *eax)
   else
   {
     int writed_size = -1;
-    lock_acquire(&file_sys_lock);
     struct file_descriptor *descriptor = proc_get_fd_struct(fd);
     if (descriptor)
     {
       struct file *f = descriptor->file;
-
-      // printf("finish %d", fd);
+      preload_and_pin_buf_addr(buf, size);
+      lock_acquire(&file_sys_lock);
       writed_size = (int)file_write(f, buf, size); // blocked
+      lock_release(&file_sys_lock);
+      unpin_preloaded_buf_addr(buf, size);
     }
-    lock_release(&file_sys_lock);
     *eax = writed_size;
   }
 }
@@ -190,6 +216,21 @@ void sys_wait(unsigned *ptr, unsigned *eax)
   int exit_code = process_wait(pid);
   *eax = exit_code;
 }
+static void
+valid_buf_user(void *src, size_t bytes)
+{
+  int32_t value;
+  size_t i;
+  for (i = 0; i < bytes; i++)
+  {
+    value = load_user_uaddr(src + i);
+    if (value == -1) // segfault or invalid memory access
+    {
+      thread_current()->proc->exit_code = -1;
+      thread_exit();
+    }
+  }
+}
 void sys_exec(unsigned *ptr, unsigned *eax)
 {
   const char *file = (const char *)pop_stack(&ptr);
@@ -205,6 +246,8 @@ void sys_create(unsigned *ptr, unsigned *eax)
 {
   const char *file = (const char *)pop_stack(&ptr);
   unsigned initial_size = (unsigned)pop_stack(&ptr);
+
+  // printf("create file %s\n", file);
   if (!valid_user_addr((unsigned *)file) || !valid_user_addr((unsigned *)file + 1))
   {
     thread_current()->proc->exit_code = -1;
@@ -236,6 +279,8 @@ void sys_open(unsigned *ptr, unsigned *eax)
     thread_exit();
   }
   load_user_uaddr(file);
+
+  // printf("open %s \n", file);
   lock_acquire(&file_sys_lock);
   struct file *fptr = filesys_open(file);
   int fd = -1;

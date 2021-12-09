@@ -28,10 +28,13 @@ struct page
 {
     struct hash_elem hash_elem;
     void *vaddr;
+    void *kaddr;
     void *aux; /* */
     enum page_status page_status;
     bool writable;
 };
+
+int vm_load_page(struct hash *supplemental_page_table, void *uaddr);
 
 struct page *create_lazy_page_info(void *vaddr, struct page_filesys_info *filesys_info, bool writable);
 struct page *create_lazy_zero_page_info(void *vaddr);
@@ -51,5 +54,4 @@ void supplemental_remove_page_entry(struct hash *supplemental_page_table, void *
 unsigned userproc_supplemental_page_table_hash(const struct hash_elem *e, void *aux);
 bool userproc_supplemental_page_table_less(const struct hash_elem *a, const struct hash_elem *b, void *aux);
 void userproc_supplemental_page_table_destroy_func(struct hash_elem *e, void *aux);
-
 #endif

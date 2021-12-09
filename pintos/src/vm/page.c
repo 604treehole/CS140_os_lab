@@ -91,7 +91,75 @@ userproc_supplemental_get_page_info(struct hash *supplemental_page_table, void *
         return NULL;
     return hash_entry(e, struct page, hash_elem);
 }
+void pin_user_page(struct hash *supplemental_page_table, void *uaddr)
+{
+    struct page *p = userproc_supplemental_get_page_info(supplemental_page_table, uaddr);
+    pin_frame(p->kaddr);
+}
+void unpin_user_page(struct hash *supplemental_page_table, void *uaddr)
+{
+    struct page *p = userproc_supplemental_get_page_info(supplemental_page_table, uaddr);
+    unpin_frame(p->kaddr);
+}
+int lazy_load_file(struct page *page)
+{
+    struct page_filesys_info *filesys_info = (struct page_filesys_info *)page->aux;
+    struct file *file = filesys_info->file;
+    size_t ofs = filesys_info->offset;
+    void *kpage = frame_allocator_get_user_page(page, 0, page->writable);
+    if (!read_executable_page(file, ofs, kpage, filesys_info->length, 0))
+        return 0;
+    // page->page_status &= ~PAGE_LAZYEXEC;
+    page->page_status |= PAGE_IN_MEMORY;
+    return 1;
+}
 
+int zero_page(struct page *page)
+{
+    frame_allocator_get_user_page(page, PAL_ZERO, true);
+    page->page_status &= ~PAGE_ZERO;
+    page->page_status |= PAGE_IN_MEMORY;
+    return 1;
+}
+int swap_page(struct page *page)
+{
+    struct swap_entry *swap_info = (struct swap_entry *)page->aux;
+    void *kernel_vaddr = frame_allocator_get_user_page(page, 0, true);
+    swap_load(swap_info, page, kernel_vaddr);
+    swap_free(swap_info);
+    page->page_status &= ~PAGE_SWAP;
+    page->page_status |= PAGE_IN_MEMORY;
+    return 1;
+}
+int vm_load_page(struct hash *supplemental_page_table, void *uaddr)
+{
+    struct page *p = userproc_supplemental_get_page_info(supplemental_page_table, uaddr);
+    if (p->page_status & PAGE_IN_MEMORY)
+    {
+        return 1;
+    }
+    else if (p->page_status & PAGE_SWAP)
+    {
+        if (!swap_page(p))
+            return 0;
+    }
+    else if (p->page_status & PAGE_ZERO)
+    {
+        if (!zero_page(p))
+            return 0;
+    }
+    else if (p->page_status & PAGE_LAZYEXEC)
+    {
+        if (!lazy_load_file(p))
+            return 0;
+    }
+    else
+    {
+        // todo map
+        return 1;
+    }
+    return 1;
+}
 void set_page_in_memory(struct hash *supplemental_page_table, void *uaddr)
 {
     struct page *p = userproc_supplemental_get_page_info(supplemental_page_table, uaddr);
@@ -162,6 +230,7 @@ bool userproc_supplemental_page_table_less(const struct hash_elem *a, const stru
 void userproc_supplemental_page_table_destroy_func(struct hash_elem *e, void *aux UNUSED)
 {
     struct page *page = hash_entry(e, struct page, hash_elem);
+    page->kaddr = NULL;
     if (page->page_status & PAGE_IN_MEMORY)
     {
         if (page->vaddr)

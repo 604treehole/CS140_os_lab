@@ -203,12 +203,12 @@ void process_exit(void)
   if (lock_held_by_current_thread(&file_sys_lock))
   {
     lock_release(&file_sys_lock); //
-    printf("lock hold sys");
+    // printf("lock hold sys");
   }
   if (lock_held_by_current_thread(&cur->supplemental_page_table_lock))
   {
     lock_release(&cur->supplemental_page_table_lock); //
-    printf("lock holder page");
+    // printf("lock holder page");
   }
   if (cur->running_procfile) // close the exec file
   {
@@ -356,13 +356,11 @@ void stack_growing(struct thread *t, void *ptr)
   void *new_page_virtual = pg_round_down(ptr);
   struct page *p = create_in_memory_page_info(new_page_virtual, true);
   insert_page_info(&t->supplemental_page_table, p);
-
   void *page_ptr_frame = frame_allocator_get_user_page(p, PAL_ZERO, true);
   if (page_ptr_frame == NULL)
   {
     PANIC("error : stack growing null");
   }
-  p->page_status |= PAGE_IN_MEMORY;
 }
 /* Loads an ELF executable from FILE_NAME into the current thread.
    Stores the executable's entry point into *EIP
@@ -590,6 +588,7 @@ bool load_executable_page(struct file *file, off_t offset, void *upage,
     uint8_t *kpage = frame_allocator_get_user_page(p, 0, true);
     if (!read_executable_page(file, offset, kpage, page_read_bytes, page_zero_bytes))
       return false;
+    p->page_status &= ~PAGE_LAZYEXEC; // !! essential
     p->page_status |= PAGE_IN_MEMORY;
   }
   return true;
