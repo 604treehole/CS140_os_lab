@@ -12,6 +12,13 @@ struct file_descriptor
     struct file *file;
     struct hash_elem hash_elem;
 };
+struct mmap_mapping
+{
+    struct hash_elem hash_elem;
+    int mapid;
+    struct file *file;
+    void *uaddr;
+};
 struct process
 {
     tid_t tid;
@@ -31,5 +38,10 @@ tid_t process_execute(const char *file_name);
 int process_wait(tid_t);
 void process_exit(void);
 void process_activate(void);
+
 struct file_descriptor *proc_get_fd_struct(int fd);
+
+void sys_munmap_inter(struct mmap_mapping *mapping, int destorying);
+struct mmap_mapping *mmap_get_mapping(struct hash *mmap_table, int mapid);
+void mmap_write_back_data(struct mmap_mapping *mapping, void *source, size_t offset, size_t length);
 #endif /* userprog/process.h */

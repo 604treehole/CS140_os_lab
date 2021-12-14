@@ -52,7 +52,7 @@ unsigned int pop_stack(unsigned int **ptr)
 void preload_and_pin_buf_addr(const void *buffer, size_t size)
 {
   struct supplemental_page_table *tb = &thread_current()->supplemental_page_table;
-  void *upage;
+  unsigned upage;
   for (upage = pg_round_down(buffer); upage < buffer + size; upage += PGSIZE)
   {
     vm_load_page(tb, upage);
@@ -68,6 +68,91 @@ void unpin_preloaded_buf_addr(const void *buffer, size_t size)
   {
     unpin_user_page(tb, upage);
   }
+}
+
+void sys_mmap(unsigned int *ptr, unsigned *eax)
+{
+  int fd = (int)pop_stack(&ptr);
+  unsigned addr = pop_stack(&ptr);
+  if (!(addr < 0xc0000000))
+  {
+    thread_current()->proc->exit_code = -1;
+    thread_exit();
+  }
+  struct thread *cur = thread_current();
+  if (addr == 0 || fd == 0 || fd == 1 || pg_ofs(addr) != 0)
+  { //error mmap
+    *eax = -1;
+    return;
+  }
+  struct file_descriptor *dp = proc_get_fd_struct(fd);
+  if (!dp)
+  {
+    *eax = -1;
+    return;
+  }
+  lock_acquire(&file_sys_lock);
+  struct file *file = file_reopen(dp->file);
+  off_t length = file_length(file);
+  lock_release(&file_sys_lock);
+  if (length == 0)
+  {
+    *eax = -1;
+    return;
+  }
+  unsigned num_pages = length / PGSIZE;
+  if (length % PGSIZE)
+    num_pages++;
+  struct hash *supt = &thread_current()->supplemental_page_table;
+  unsigned i = 0;
+  while (i < num_pages)
+  {
+    if (supplemental_entry_exists(supt, addr + i * PGSIZE, NULL))
+    {
+      *eax = -1;
+      return;
+    }
+    i++;
+  }
+  struct mmap_mapping *mapping = malloc(sizeof(struct mmap_mapping));
+  ASSERT(mapping);
+  mapping->mapid = cur->next_mmapid++;
+  mapping->file = file;
+  mapping->uaddr = addr;
+  unsigned bytes_into_file = 0;
+  void *uaddr = addr;
+  for (i = 0; i < num_pages; ++i)
+  {
+    struct page_mmap_info *mmap_info = malloc(sizeof(struct page_mmap_info));
+    if (!mmap_info)
+    {
+      thread_current()->proc->exit_code = -1;
+      thread_exit();
+    }
+    mmap_info->offset = bytes_into_file;
+    mmap_info->length = length - bytes_into_file < PGSIZE ? length - bytes_into_file : PGSIZE;
+    mmap_info->mapid = mapping->mapid;
+
+    lock_acquire(&cur->supplemental_page_table_lock);
+    struct page *p = create_mmap_page_info(uaddr, mmap_info);
+    insert_page_info(supt, p);
+    lock_release(&cur->supplemental_page_table_lock);
+    bytes_into_file += PGSIZE;
+    uaddr += PGSIZE;
+  }
+  hash_insert(&cur->mmap_table, &mapping->hash_elem);
+  *eax = mapping->mapid;
+  return;
+}
+
+void sys_munmap(unsigned int *ptr)
+{
+  int mapid = (int)pop_stack(&ptr);
+  struct hash *mmap_table = &thread_current()->mmap_table;
+  struct mmap_mapping *mapping = mmap_get_mapping(mmap_table, mapid);
+  if (!mapping)
+    return;
+  sys_munmap_inter(mapping, 0);
 }
 void sys_halt(struct intr_frame *f)
 {
@@ -86,7 +171,7 @@ void sys_read(unsigned *ptr, unsigned *eax)
   int fd = (int)pop_stack(&ptr);
   char *buf = (char *)pop_stack(&ptr);
   unsigned size = pop_stack(&ptr);
-  if (!(buf && buf < 0xc0000000) || !((buf + size) && (buf + size) < 0xc0000000))
+  if (!(buf && buf < 0xc0000000) || !((buf + size) && (buf + size) < 0xc0000000)) // bad ptr
   {
     thread_current()->proc->exit_code = -1;
     thread_exit();
@@ -105,18 +190,12 @@ void sys_read(unsigned *ptr, unsigned *eax)
       }
     }
   }
-  // lock_release(&thread_current()->supplemental_page_table_lock);  ???
   if (!supplemental_entry_exists(&thread_current()->supplemental_page_table, buf, NULL) || !supplemental_entry_exists(&thread_current()->supplemental_page_table, buf + size, NULL))
   {
     thread_current()->proc->exit_code = -1;
     thread_exit();
   }
   if (!supplemental_is_page_writable(&thread_current()->supplemental_page_table, buf))
-  {
-    thread_current()->proc->exit_code = -1;
-    thread_exit();
-  }
-  if (-1 == load_user_uaddr(buf))
   {
     thread_current()->proc->exit_code = -1;
     thread_exit();
@@ -325,8 +404,9 @@ syscall_handler(struct intr_frame *f UNUSED)
 {
   unsigned *esp_addr = (unsigned *)f->esp;
   unsigned *eax_addr = (unsigned *)&f->eax;
-  // int number = *(unsigned int *)(esp_addr);
+  thread_current()->current_esp = f->esp;
   int number = pop_stack(&esp_addr);
+  // printf("%s tid:%d syscall_id %d\n", thread_current()->name, thread_current()->tid, number);
   switch (number)
   {
   case SYS_HALT:
@@ -368,8 +448,16 @@ syscall_handler(struct intr_frame *f UNUSED)
   case SYS_CLOSE:
     sys_close(esp_addr, eax_addr);
     break;
+  case SYS_MMAP:
+    sys_mmap(esp_addr, eax_addr);
+    break;
+  case SYS_MUNMAP:
+    sys_munmap(esp_addr);
+    break;
   default:
     thread_current()->proc->exit_code = -1;
     thread_exit();
   }
+
+  // printf("%s tid:%d syscall_id %d finished\n", thread_current()->name, thread_current()->tid, number);
 }

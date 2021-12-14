@@ -15,6 +15,13 @@
         "array": "c",
         "initializer_list": "c",
         "utility": "c",
-        "synch.h": "c"
+        "synch.h": "c",
+        "cstdio": "c",
+        "debug.h": "c",
+        "stdio.h": "c",
+        "page.h": "c",
+        "vector": "c",
+        "system_error": "c",
+        "frame.h": "c"
     },
 }

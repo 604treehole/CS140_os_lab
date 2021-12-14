@@ -110,7 +110,7 @@ kill(struct intr_frame *f)
 }
 int is_in_stack(void *ptr, unsigned *esp)
 { // 8mb the PUSHA instruction pushes 32 bytes at once, so it can fault 32 bytes below the stack pointer.
-   return ((PHYS_BASE - pg_round_down(ptr)) <= 8388608 && (unsigned *)ptr >= ((unsigned)esp - 32));
+   return ((PHYS_BASE - pg_round_down(ptr)) <= 8388608 && ptr < PHYS_BASE && (uint32_t *)ptr >= (esp - 32));
 }
 
 /* Page fault handler.  This is a skeleton that must be filled in
@@ -161,19 +161,33 @@ page_fault(struct intr_frame *f)
    // if (lock_held_by_current_thread(&file_sys_lock))
    // {
    //    lock_release(&file_sys_lock); //
-   //    printf("lock hold sys");
+   //    printf("lock hold sys %s\n", t->name);
    // }
    // if (lock_held_by_current_thread(&thread_current()->supplemental_page_table_lock))
    // {
    //    lock_release(&thread_current()->supplemental_page_table_lock); //
-   //    printf("lock holder page");
+   //    printf("lock holder page %s\n", t->name);
    // }
+   // if (lock_held_by_current_thread(&thread_current()->supplemental_page_table_lock))
+   // {
+   //    lock_release(&frame_allocation_lock); //
+   //    printf("lock holder frame %s\n", t->name);
+   // }
+
    lock_acquire(&t->supplemental_page_table_lock);
    struct hash_elem *e = hash_find(&t->supplemental_page_table, &p.hash_elem);
+   void *esp = user ? f->esp : t->current_esp;
    if (!e)
    {
-      if (!is_in_stack(fault_addr, f->esp))
+      // if (!(is_in_stack(fault_addr, esp)  ))
+      if (!((esp <= fault_addr || fault_addr == f->esp - 4 || fault_addr == f->esp - 32) && (PHYS_BASE - 8388608 <= fault_addr && fault_addr < PHYS_BASE)))
       {
+         // printf("debug: page fault %p,%p caused by tid:%d\n", fault_addr, f->esp, thread_current()->tid);
+         // printf("Page fault at %p: %s error %s page in %s context.\n",
+         //        fault_addr,
+         //        not_present ? "not present" : "rights violation",
+         //        write ? "writing" : "reading",
+         //        user ? "user" : "kernel");
          thread_current()->proc->exit_code = -1;
          thread_exit();
          return;

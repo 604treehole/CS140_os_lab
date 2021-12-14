@@ -6,6 +6,12 @@
 #include "threads/vaddr.h"
 #include "threads/malloc.h"
 #include "userprog/pagedir.h"
+#include "userprog/syscall.h"
+static unsigned frame_hash(const struct hash_elem *e, void *aux);
+static bool frame_less(const struct hash_elem *a, const struct hash_elem *b, void *aux);
+static void *frame_allocator_evict_page(void);
+static struct frame *frame_allocator_choose_eviction_frame(void);
+static void frame_allocator_save_frame(struct frame *);
 void frame_table_init(void)
 {
     hash_init(&frame_table, frame_hash, frame_less, NULL);
@@ -63,27 +69,29 @@ static bool frame_less(const struct hash_elem *a, const struct hash_elem *b, voi
     return frame_a->frame_addr < frame_b->frame_addr;
 }
 /*将page和frame_table的一个frame对应起来，并返回该帧的物理地址(=kernel_vaddr)*/
-void *frame_allocator_get_user_page(struct page *page, enum palloc_flags flags, bool writable)
+void *frame_allocator_get_user_page(struct page *page, enum palloc_flags flags, bool writable) // bug: holding lock & re entry
 {
+
+    // printf("acquire frame alloc\n");
     lock_acquire(&frame_allocation_lock);
+    // printf("acquire alloc success\n");
+
     void *user_vaddr = page->vaddr;
     ASSERT(is_user_vaddr(user_vaddr));
     void *kernel_vaddr = palloc_get_page(PAL_USER | flags); //在用户page池里取一个空闲页
     if (!kernel_vaddr)                                      //如果没有空闲页了就驱逐一页使其空闲
     {
-        frame_allocator_evict_page();
+        frame_allocator_evict_page(); // table lock acq
         kernel_vaddr = palloc_get_page(PAL_USER | flags);
         ASSERT(kernel_vaddr)
     }
-
     if (!install_page(user_vaddr, kernel_vaddr, writable)) //从用户虚拟地址向内核虚拟地址的映射，且将映射关系添加进页目录中
     {
         PANIC("Could not install user page %p", user_vaddr);
     }
     frame_map(kernel_vaddr, page, writable);
-    lock_release(&frame_allocation_lock);
     memset(kernel_vaddr, 0, PGSIZE);
-
+    lock_release(&frame_allocation_lock);
     return kernel_vaddr;
 }
 /*释放kernel_vaddr在frame_table对应的frame<-->page映射*/
@@ -132,21 +140,19 @@ frame_allocator_save_frame(struct frame *f)
     tid_t thread_id = f->owner_id;
     struct thread *t = thread_find_thread(thread_id);
     if (!t)
+    {
+        printf("%d", thread_id);
         PANIC("Corruption of frame table");
-
-    ASSERT(f->page);
-
+    }
     bool dirty_flag = pagedir_is_dirty(t->pagedir, f->page->vaddr);
     enum page_status status = f->page->page_status;
-
-    if ((status & PAGE_MEMORY_MAPPED) && dirty_flag)
+    if ((status & PAGE_MEMORY_MAPPED) && dirty_flag) // write back
     {
-        // struct page_mmap_info *mmap_info = (struct page_mmap_info *)f->page->aux;
-        // struct mmap_mapping *m = mmap_get_mapping(&t->mmap_table, mmap_info->mapid);
-
-        // mmap_write_back_data(m, f->frame_addr, mmap_info->offset, mmap_info->length);
+        struct page_mmap_info *mmap_info = (struct page_mmap_info *)f->page->aux;
+        struct mmap_mapping *m = mmap_get_mapping(&t->mmap_table, mmap_info->mapid);
+        mmap_write_back_data(m, f->frame_addr, mmap_info->offset, mmap_info->length);
     }
-    else if (!(f->page->page_status & PAGE_LAZYEXEC))
+    else if (!(f->page->page_status & PAGE_LAZYEXEC)) // lazyexec can redo read from file
     {
         struct swap_entry *s = swap_alloc();
         if (!s)
@@ -161,22 +167,21 @@ frame_allocator_save_frame(struct frame *f)
 }
 void pin_frame(void *kaddr)
 {
-    lock_acquire(&frame_allocation_lock);
+    lock_acquire(&frame_table_lock);
     struct frame *fr = find_frame_by_kaddr(kaddr);
     fr->unused_count = -1;
-    lock_release(&frame_allocation_lock);
+    lock_release(&frame_table_lock);
 }
 void unpin_frame(void *kaddr)
 {
-    lock_acquire(&frame_allocation_lock);
+    lock_acquire(&frame_table_lock);
     struct frame *fr = find_frame_by_kaddr(kaddr);
-    fr->unused_count = -1;
-    lock_release(&frame_allocation_lock);
+    fr->unused_count = 1;
+    lock_release(&frame_table_lock);
 }
 
 /**/
-struct frame *
-frame_allocator_choose_eviction_frame(void)
+static struct frame *frame_allocator_choose_eviction_frame(void)
 {
     struct hash_iterator i;
     struct thread *t;

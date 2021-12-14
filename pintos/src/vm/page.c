@@ -4,6 +4,7 @@
 #include "threads/vaddr.h"
 #include "vm/page.h"
 #include "vm/frame.h"
+#include "devices/timer.h"
 static struct page *userproc_supplemental_get_page_info(struct hash *supplemental_page_table, void *vaddr);
 static void free_user_page(void *upage);
 
@@ -84,12 +85,22 @@ free_user_page(void *upage)
 static struct page *
 userproc_supplemental_get_page_info(struct hash *supplemental_page_table, void *vaddr)
 {
-    struct page p;
-    p.vaddr = pg_round_down(vaddr);
-    struct hash_elem *e = hash_find(supplemental_page_table, &p.hash_elem);
-    if (e == NULL)
-        return NULL;
-    return hash_entry(e, struct page, hash_elem);
+    // struct page p;
+    // p.vaddr = pg_round_down(vaddr);
+    void *paddr = pg_round_down(vaddr);
+    struct hash_iterator it;
+    hash_first(&it, supplemental_page_table);
+    while (hash_next(&it))
+    {
+        struct page *p = hash_entry(hash_cur(&it), struct page, hash_elem);
+        if (p->vaddr == paddr)
+            return p;
+    }
+    return NULL;
+    // struct hash_elem *e = hash_find(supplemental_page_table, &p.hash_elem);
+    // if (e == NULL)
+    //     return NULL;
+    // return hash_entry(e, struct page, hash_elem);
 }
 void pin_user_page(struct hash *supplemental_page_table, void *uaddr)
 {
@@ -107,6 +118,8 @@ int lazy_load_file(struct page *page)
     struct file *file = filesys_info->file;
     size_t ofs = filesys_info->offset;
     void *kpage = frame_allocator_get_user_page(page, 0, page->writable);
+    // printf("load lazy\n");
+    // timer_sleep(100); // trick
     if (!read_executable_page(file, ofs, kpage, filesys_info->length, 0))
         return 0;
     // page->page_status &= ~PAGE_LAZYEXEC;
@@ -122,18 +135,51 @@ int zero_page(struct page *page)
     return 1;
 }
 int swap_page(struct page *page)
-{
+{ //todo
     struct swap_entry *swap_info = (struct swap_entry *)page->aux;
+    // printf("swaping     ");
     void *kernel_vaddr = frame_allocator_get_user_page(page, 0, true);
+    // printf("get kaddr       ");
     swap_load(swap_info, page, kernel_vaddr);
+    // printf("load from swap      ");
     swap_free(swap_info);
+    // printf("free swap\n");
     page->page_status &= ~PAGE_SWAP;
     page->page_status |= PAGE_IN_MEMORY;
     return 1;
 }
+int mmap_page(struct page *page)
+{
+    struct page_mmap_info *mmap_info = (struct page_mmap_info *)page->aux;
+    void *kpage = frame_allocator_get_user_page(page, PAL_ZERO, true);
+    struct mmap_mapping *m = mmap_get_mapping(&thread_current()->mmap_table, mmap_info->mapid);
+    if (!m)
+    {
+        frame_allocator_free_user_page(kpage, false);
+        thread_current()->proc->exit_code = -1;
+        thread_exit();
+    }
+    struct file *file = m->file;
+    size_t ofs = mmap_info->offset;
+    size_t length = mmap_info->length;
+    bool holding = false;
+    lock_acquire(&file_sys_lock);
+    file_seek(file, ofs);
+    int bytes_read = file_read(file, kpage, length);
+    lock_release(&file_sys_lock);
+    if (bytes_read != length)
+    {
+        frame_allocator_free_user_page(kpage, false);
+        thread_current()->proc->exit_code = -1;
+        thread_exit();
+    }
+    page->page_status |= PAGE_IN_MEMORY;
+    return true;
+}
 int vm_load_page(struct hash *supplemental_page_table, void *uaddr)
 {
     struct page *p = userproc_supplemental_get_page_info(supplemental_page_table, uaddr);
+    // printf("load status %d\n", p->page_status);
     if (p->page_status & PAGE_IN_MEMORY)
     {
         return 1;
@@ -153,10 +199,10 @@ int vm_load_page(struct hash *supplemental_page_table, void *uaddr)
         if (!lazy_load_file(p))
             return 0;
     }
-    else
+    else if (p->page_status & PAGE_MEMORY_MAPPED)
     {
-        // todo map
-        return 1;
+        if (!mmap_page(p))
+            return 0;
     }
     return 1;
 }
@@ -238,7 +284,7 @@ void userproc_supplemental_page_table_destroy_func(struct hash_elem *e, void *au
     }
     if (page->aux)
     {
-        if (page->page_status & PAGE_LAZYEXEC || page->page_status & PAGE_MEMORY_MAPPED)
+        if (page->page_status & PAGE_LAZYEXEC || (page->page_status & PAGE_MEMORY_MAPPED))
         {
             free(page->aux);
             page->aux = NULL;
@@ -249,6 +295,5 @@ void userproc_supplemental_page_table_destroy_func(struct hash_elem *e, void *au
             page->aux = NULL;
         }
     }
-
     free(page);
 }

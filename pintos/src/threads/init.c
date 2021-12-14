@@ -143,6 +143,7 @@ int main(void)
   /* Finish up. */
   shutdown();
   thread_exit();
+  swap_destroy();
 }
 
 /* Clear the "BSS", a segment that should be initialized to

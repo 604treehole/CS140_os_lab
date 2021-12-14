@@ -111,7 +111,7 @@
             // --filesys-size=2 -p tests/vm/page-linear -a page-linear --swap-size=4 -- -q  -f run page-linear
             //--filesys-size=2 -p tests/vm/page-parallel -a page-parallel -p tests/vm/child-linear -a child-linear --swap-size=4 -- -q  -f run page-parallel
             // "command": "pintos -v -k -T 60 --bochs --gdb --filesys-size=2 -p tests/vm/pt-grow-stk-sc -a pt-grow-stk-sc --swap-size=4 -- -q  -f run pt-grow-stk-sc",
-            "command": "pintos -v -k -T 60 --bochs --gdb --filesys-size=2 -p tests/userprog/read-bad-ptr -a read-bad-ptr -p ../../tests/userprog/sample.txt -a sample.txt --swap-size=4 -- -q  -f run read-bad-ptr",
+            "command": "pintos -v -k -T 300 --bochs --gdb --filesys-size=2 -p tests/filesys/base/syn-read -a syn-read -p tests/filesys/base/child-syn-read -a child-syn-read --swap-size=4 -- -q  -f run syn-read",
             "options": {
                 "cwd": "${workspaceFolder}/src/vm/build"
             }

@@ -47,6 +47,8 @@ void insert_page_info(struct hash *supplemental_page_table, struct page *page);
 void set_page_in_memory(struct hash *supplemental_page_table, void *uaddr);
 void set_page_not_in_memory(struct hash *supplemental_page_table, void *uaddr);
 
+void pin_user_page(struct hash *supplemental_page_table, void *uaddr);
+void unpin_user_page(struct hash *supplemental_page_table, void *uaddr);
 bool supplemental_entry_exists(struct hash *supplemental_page_table, void *uaddr, struct page **entry);
 bool supplemental_is_page_writable(struct hash *supplemental_page_table, void *uaddr);
 void supplemental_remove_page_entry(struct hash *supplemental_page_table, void *uaddr);

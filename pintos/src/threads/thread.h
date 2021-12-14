@@ -105,6 +105,7 @@ struct thread
    struct hash supplemental_page_table;
    struct hash mmap_table;
    int next_mmapid;
+   char *current_esp;
    // #endif
 
    /* Owned by thread.c. */

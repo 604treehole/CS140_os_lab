@@ -305,8 +305,6 @@ off_t inode_write_at(struct inode *inode, const void *buffer_, off_t size,
     size -= chunk_size;
     offset += chunk_size;
     bytes_written += chunk_size;
-    // todo
-    // printf("write bytes %d \n", bytes_written);
   }
   free(bounce);
 

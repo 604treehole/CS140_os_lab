@@ -20,9 +20,13 @@
 #include "devices/timer.h"
 #include "vm/frame.h"
 #include "vm/page.h"
+#include "userprog/syscall.h"
 static thread_func start_process NO_RETURN;
 static bool load(const char *cmdline, void (**eip)(void), void **esp);
 void fd_table_destroy_func(struct hash_elem *e, void *aux UNUSED);
+bool mmap_less(const struct hash_elem *a, const struct hash_elem *b, void *aux UNUSED);
+unsigned mmap_hash(const struct hash_elem *e, void *aux UNUSED);
+void mmap_table_destroy_func(struct hash_elem *e, void *aux);
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
@@ -221,7 +225,7 @@ void process_exit(void)
   {
     if (cur->proc->exit_code != 0xeeee0eee)
       printf("%s: exit(%d)\n", cur->name, cur->proc->exit_code);
-
+    // debug_backtrace();
     hash_destroy(&cur->proc->fd_table, &fd_table_destroy_func); // close all files opened
     cur->proc->self_alive = false;
 
@@ -234,6 +238,7 @@ void process_exit(void)
       free(cur->proc);
     }
   }
+  hash_destroy(&cur->mmap_table, mmap_table_destroy_func);
   hash_destroy(&cur->supplemental_page_table, userproc_supplemental_page_table_destroy_func);
 
   for (e = list_begin(&cur->children); e != list_end(&cur->children);)
@@ -375,6 +380,8 @@ bool load(const char *file_name, void (**eip)(void), void **esp)
   bool success = false;
   int i;
   hash_init(&(t->supplemental_page_table), userproc_supplemental_page_table_hash, userproc_supplemental_page_table_less, NULL);
+  hash_init(&t->mmap_table, mmap_hash, mmap_less, NULL);
+  t->next_mmapid = 1;
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create();
   if (t->pagedir == NULL)
@@ -711,4 +718,81 @@ struct file_descriptor *proc_get_fd_struct(int fd)
     return NULL;
   struct file_descriptor *open_file_desc = hash_entry(found_element, struct file_descriptor, hash_elem);
   return open_file_desc;
+}
+unsigned mmap_hash(const struct hash_elem *e, void *aux UNUSED)
+{
+  const struct mmap_mapping *mapping = hash_entry(e, struct mmap_mapping, hash_elem);
+  return hash_bytes(&mapping->mapid, sizeof(mapping->mapid));
+}
+
+bool mmap_less(const struct hash_elem *a, const struct hash_elem *b, void *aux UNUSED)
+{
+  const struct mmap_mapping *mapping_a = hash_entry(a, struct mmap_mapping, hash_elem);
+  const struct mmap_mapping *mapping_b = hash_entry(b, struct mmap_mapping, hash_elem);
+  return mapping_a->mapid < mapping_b->mapid;
+}
+struct mmap_mapping *mmap_get_mapping(struct hash *mmap_table, int mapid)
+{
+  struct mmap_mapping m;
+  m.mapid = mapid;
+  struct hash_elem *e = hash_find(mmap_table, &m.hash_elem);
+  if (!e)
+    return NULL;
+  return hash_entry(e, struct mmap_mapping, hash_elem);
+}
+void mmap_write_back_data(struct mmap_mapping *mapping, void *source, size_t offset, size_t length)
+{
+  lock_acquire(&file_sys_lock);
+  file_seek(mapping->file, offset);
+  file_write(mapping->file, source, length);
+  lock_release(&file_sys_lock);
+}
+void sys_munmap_inter(struct mmap_mapping *mapping, int destorying)
+{
+  lock_acquire(&file_sys_lock);
+  off_t length = file_length(mapping->file);
+  lock_release(&file_sys_lock);
+  unsigned num_pages = length / PGSIZE;
+  if (length % PGSIZE)
+    num_pages++;
+  struct hash *supt = &thread_current()->supplemental_page_table;
+  unsigned i = 0;
+  void *uaddr = mapping->uaddr;
+  while (i < num_pages)
+  {
+    struct page *pageptr;
+    if (supplemental_entry_exists(supt, uaddr, &pageptr))
+    {
+      if (pageptr->page_status & PAGE_IN_MEMORY)
+      {
+        struct page_mmap_info *mmap_info = (struct page_mmap_info *)pageptr->aux;
+        void *kaddr = pagedir_get_page(thread_current()->pagedir, uaddr);
+        if (pagedir_is_dirty(thread_current()->pagedir, pageptr->vaddr))
+          mmap_write_back_data(mapping, kaddr, mmap_info->offset, mmap_info->length);
+        frame_allocator_free_user_page(kaddr, false);
+      }
+      supplemental_remove_page_entry(supt, uaddr);
+      uaddr += PGSIZE;
+    }
+    else
+    {
+      PANIC("mmap uaddr not exist");
+    }
+    i++;
+  }
+  if (!destorying)
+  {
+    struct mmap_mapping lookup;
+    lookup.mapid = mapping->mapid;
+    hash_delete(&thread_current()->mmap_table, &lookup.hash_elem);
+  }
+  lock_acquire(&file_sys_lock);
+  file_close(mapping->file);
+  lock_release(&file_sys_lock);
+  free(mapping);
+}
+void mmap_table_destroy_func(struct hash_elem *e, void *aux)
+{
+  struct mmap_mapping *mapping = hash_entry(e, struct mmap_mapping, hash_elem);
+  sys_munmap_inter(mapping, 1);
 }
