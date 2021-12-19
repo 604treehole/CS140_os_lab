@@ -191,7 +191,6 @@ static struct frame *frame_allocator_choose_eviction_frame(void)
     bool accessed_candidate = true;
     bool dirty;
     bool accessed;
-
     lock_acquire(&frame_table_lock);
     hash_first(&i, &frame_table);
     while (hash_next(&i))
@@ -208,25 +207,23 @@ static struct frame *frame_allocator_choose_eviction_frame(void)
         {
             if (!accessed_candidate)
             {
-                f->unused_count = 0;
-                break;
+                f->unused_count >>= 1;
+                continue;
             }
         }
         else
             f->unused_count++;
-
         if (dirty)
         {
             if (!dirty_candidate)
             {
-                f->unused_count = 0;
-                break;
+                f->unused_count >>= 1;
+                continue;
             }
         }
         else
             f->unused_count++;
-
-        if (++f->unused_count > least_used) // && !(f->page->page_status & PAGE_LAZYEXEC)
+        if (++f->unused_count > least_used)
         {
             eviction_candidate = f;
             dirty_candidate = dirty;
@@ -234,7 +231,6 @@ static struct frame *frame_allocator_choose_eviction_frame(void)
             least_used = f->unused_count;
         }
     }
-
     eviction_candidate->unused_count = 0;
     lock_release(&frame_table_lock);
     return eviction_candidate;

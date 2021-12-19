@@ -8,5 +8,5 @@
 void exception_init(void);
 void exception_print_stats(void);
 
-int is_in_stack(void *ptr, unsigned *esp);
+int is_in_stack(void *ptr, unsigned esp);
 #endif /* userprog/exception.h */

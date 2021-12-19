@@ -5,7 +5,8 @@
 #include "threads/palloc.h"
 
 struct hash frame_table;
-
+struct lock frame_table_lock;
+struct lock frame_allocation_lock;
 struct frame
 {
     struct hash_elem hash_elem;
@@ -14,8 +15,6 @@ struct frame
     int owner_id;
     int unused_count;
 };
-struct lock frame_table_lock;
-struct lock frame_allocation_lock;
 void frame_table_init();
 void *frame_allocator_get_user_page(struct page *page, enum palloc_flags flags, bool writable);
 void frame_allocator_free_user_page(void *kernel_vaddr, bool locked);

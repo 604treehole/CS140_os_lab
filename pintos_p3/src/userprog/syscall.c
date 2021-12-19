@@ -165,17 +165,8 @@ bool sys_exit(unsigned int *ptr)
   thread_exit();
   return true;
 }
-
-void sys_read(unsigned *ptr, unsigned *eax)
+void buf_stack_grow(void *buf, unsigned size, void *ptr)
 {
-  int fd = (int)pop_stack(&ptr);
-  char *buf = (char *)pop_stack(&ptr);
-  unsigned size = pop_stack(&ptr);
-  if (!(buf && buf < 0xc0000000) || !((buf + size) && (buf + size) < 0xc0000000)) // bad ptr
-  {
-    thread_current()->proc->exit_code = -1;
-    thread_exit();
-  }
   void *buffer_page; // check stack grow
   for (buffer_page = pg_round_down(buf); buffer_page <= buf + size; buffer_page += 4096)
   {
@@ -190,6 +181,18 @@ void sys_read(unsigned *ptr, unsigned *eax)
       }
     }
   }
+}
+void sys_read(unsigned *ptr, unsigned *eax)
+{
+  int fd = (int)pop_stack(&ptr);
+  char *buf = (char *)pop_stack(&ptr);
+  unsigned size = pop_stack(&ptr);
+  if (!(buf && buf < 0xc0000000) || !((buf + size) && (buf + size) < 0xc0000000)) // bad ptr
+  {
+    thread_current()->proc->exit_code = -1;
+    thread_exit();
+  }
+  buf_stack_grow(buf, size, ptr);
   if (!supplemental_entry_exists(&thread_current()->supplemental_page_table, buf, NULL) || !supplemental_entry_exists(&thread_current()->supplemental_page_table, buf + size, NULL))
   {
     thread_current()->proc->exit_code = -1;
@@ -223,7 +226,6 @@ void sys_read(unsigned *ptr, unsigned *eax)
     unpin_preloaded_buf_addr(buf, size);
   }
 }
-
 void sys_write(unsigned *ptr, unsigned *eax)
 {
   int fd = (int)pop_stack(&ptr);
@@ -239,8 +241,11 @@ void sys_write(unsigned *ptr, unsigned *eax)
     thread_current()->proc->exit_code = -1;
     thread_exit();
   }
-  load_user_uaddr(buf);
-  load_user_uaddr(buf + size);
+
+  buf_stack_grow(buf, size, ptr);
+  // valid_buf_user(buf,size);
+  // load_user_uaddr(buf);
+  // load_user_uaddr(buf + size);
   if (fd == 1)
   {
     putbuf(buf, size);
@@ -294,21 +299,6 @@ void sys_wait(unsigned *ptr, unsigned *eax)
   int pid = (int)pop_stack(&ptr);
   int exit_code = process_wait(pid);
   *eax = exit_code;
-}
-static void
-valid_buf_user(void *src, size_t bytes)
-{
-  int32_t value;
-  size_t i;
-  for (i = 0; i < bytes; i++)
-  {
-    value = load_user_uaddr(src + i);
-    if (value == -1) // segfault or invalid memory access
-    {
-      thread_current()->proc->exit_code = -1;
-      thread_exit();
-    }
-  }
 }
 void sys_exec(unsigned *ptr, unsigned *eax)
 {

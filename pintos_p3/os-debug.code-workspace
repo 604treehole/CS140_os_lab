@@ -10,7 +10,8 @@
 			"thread.h": "c",
 			"synch.h": "c",
 			"file.h": "c",
-			"timer.h": "c"
+			"timer.h": "c",
+			"*.inc": "cpp"
 		}
 	}
 }

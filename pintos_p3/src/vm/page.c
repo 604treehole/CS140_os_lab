@@ -85,8 +85,6 @@ free_user_page(void *upage)
 static struct page *
 userproc_supplemental_get_page_info(struct hash *supplemental_page_table, void *vaddr)
 {
-    // struct page p;
-    // p.vaddr = pg_round_down(vaddr);
     void *paddr = pg_round_down(vaddr);
     struct hash_iterator it;
     hash_first(&it, supplemental_page_table);
@@ -97,6 +95,8 @@ userproc_supplemental_get_page_info(struct hash *supplemental_page_table, void *
             return p;
     }
     return NULL;
+    // struct page p;
+    // p.vaddr = pg_round_down(vaddr);
     // struct hash_elem *e = hash_find(supplemental_page_table, &p.hash_elem);
     // if (e == NULL)
     //     return NULL;
@@ -119,10 +119,8 @@ int lazy_load_file(struct page *page)
     size_t ofs = filesys_info->offset;
     void *kpage = frame_allocator_get_user_page(page, 0, page->writable);
     // printf("load lazy\n");
-    // timer_sleep(100); // trick
     if (!read_executable_page(file, ofs, kpage, filesys_info->length, 0))
         return 0;
-    // page->page_status &= ~PAGE_LAZYEXEC;
     page->page_status |= PAGE_IN_MEMORY;
     return 1;
 }
@@ -206,33 +204,13 @@ int vm_load_page(struct hash *supplemental_page_table, void *uaddr)
     }
     return 1;
 }
-void set_page_in_memory(struct hash *supplemental_page_table, void *uaddr)
-{
-    struct page *p = userproc_supplemental_get_page_info(supplemental_page_table, uaddr);
-    if (!p)
-        PANIC("Error: userproc_supplemental_mark_page_in_memory", p);
-
-    p->page_status |= PAGE_IN_MEMORY;
-}
-
-void set_page_not_in_memory(struct hash *supplemental_page_table, void *uaddr)
-{
-    struct page *p = userproc_supplemental_get_page_info(supplemental_page_table, uaddr);
-    if (!p)
-        PANIC("Error: userproc_supplemental_mark_page_not_in_memory", p);
-
-    p->page_status &= ~PAGE_IN_MEMORY;
-}
-
 bool supplemental_entry_exists(struct hash *supplemental_page_table, void *uaddr, struct page **entry)
 {
     struct page *p = userproc_supplemental_get_page_info(supplemental_page_table, uaddr);
     if (!p)
         return false;
-
     if (entry)
         *entry = p;
-
     return true;
 }
 

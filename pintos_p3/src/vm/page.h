@@ -28,10 +28,10 @@ struct page
 {
     struct hash_elem hash_elem;
     void *vaddr;
-    void *kaddr;
-    void *aux; /* */
+    void *aux;
     enum page_status page_status;
     bool writable;
+    void *kaddr; //
 };
 
 int vm_load_page(struct hash *supplemental_page_table, void *uaddr);
@@ -43,15 +43,13 @@ struct page *create_mmap_page_info(void *vaddr, struct page_mmap_info *mmap_info
 struct page *create_swap_page(void *vaddr, struct swap_entry *swap_page);
 
 void insert_page_info(struct hash *supplemental_page_table, struct page *page);
-
-void set_page_in_memory(struct hash *supplemental_page_table, void *uaddr);
-void set_page_not_in_memory(struct hash *supplemental_page_table, void *uaddr);
+void supplemental_remove_page_entry(struct hash *supplemental_page_table, void *uaddr);
 
 void pin_user_page(struct hash *supplemental_page_table, void *uaddr);
 void unpin_user_page(struct hash *supplemental_page_table, void *uaddr);
+
 bool supplemental_entry_exists(struct hash *supplemental_page_table, void *uaddr, struct page **entry);
 bool supplemental_is_page_writable(struct hash *supplemental_page_table, void *uaddr);
-void supplemental_remove_page_entry(struct hash *supplemental_page_table, void *uaddr);
 
 unsigned userproc_supplemental_page_table_hash(const struct hash_elem *e, void *aux);
 bool userproc_supplemental_page_table_less(const struct hash_elem *a, const struct hash_elem *b, void *aux);
